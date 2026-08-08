@@ -109,6 +109,7 @@ lock_snapshot() {
 
 WATCH_DELIVERY_LOG="$STATE/.watch-deliveries.log"
 WATCH_DELIVERY_LOCK="$STATE/.watch-deliveries.lock"
+WATCH_DELIVERY_CONSUMED_REASON=
 OWNER_DELIVERED_CLOSE='watcher: cycle closed actionably (reason delivered by its owner arm)'
 
 cycle_active=0
@@ -282,42 +283,52 @@ fail_unexplained_cycle() {
   return 1
 }
 
-# Close a cycle whose reason line this arm could not read against the bounded
-# terminal-delivery ledger the watcher publishes before releasing its lock.
-close_unobserved_cycle() {
-  local i reason clean_identity record_pid record_identity record_reason tmp
+consume_delivery_record() {
+  local i clean_identity record_pid record_identity record_reason tmp matched=0
+  WATCH_DELIVERY_CONSUMED_REASON=
   clean_identity=$(printf '%s' "$cycle_watcher_identity" | tr '\t\r\n' '   ')
   i=0
   while ! fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; do
     [ "$i" -lt 20 ] || {
-      fail_unexplained_cycle
       return 1
     }
     sleep 0.02
     i=$((i + 1))
   done
-  reason=
-  if [ -f "$WATCH_DELIVERY_LOG" ]; then
-    while IFS=$'\t' read -r record_pid record_identity record_reason; do
-      if [ "$record_pid" = "$cycle_watcher_pid" ] && [ "$record_identity" = "$clean_identity" ]; then
-        reason=$record_reason
-      fi
-    done < "$WATCH_DELIVERY_LOG"
+  tmp="$WATCH_DELIVERY_LOG.tmp.$ARM_PID"
+  if : > "$tmp" 2>/dev/null; then
+    if [ -f "$WATCH_DELIVERY_LOG" ]; then
+      while IFS=$'\t' read -r record_pid record_identity record_reason; do
+        if [ "$record_pid" = "$cycle_watcher_pid" ] && [ "$record_identity" = "$clean_identity" ]; then
+          matched=1
+          WATCH_DELIVERY_CONSUMED_REASON=$record_reason
+          continue
+        fi
+        printf '%s\t%s\t%s\n' "$record_pid" "$record_identity" "$record_reason" >> "$tmp" 2>/dev/null || true
+      done < "$WATCH_DELIVERY_LOG"
+    fi
+    if [ "$matched" -eq 1 ]; then
+      mv -f "$tmp" "$WATCH_DELIVERY_LOG" 2>/dev/null || {
+        rm -f "$tmp" 2>/dev/null || true
+        fm_lock_release "$WATCH_DELIVERY_LOCK"
+        WATCH_DELIVERY_CONSUMED_REASON=
+        return 1
+      }
+    else
+      rm -f "$tmp" 2>/dev/null || true
+    fi
+    fm_lock_release "$WATCH_DELIVERY_LOCK"
+    [ "$matched" -eq 1 ] && return 0
+    return 1
   fi
   fm_lock_release "$WATCH_DELIVERY_LOCK"
-  if [ -n "$reason" ]; then
-    tmp="$WATCH_DELIVERY_LOG.tmp.$ARM_PID"
-    if : > "$tmp" 2>/dev/null; then
-      if [ -f "$WATCH_DELIVERY_LOG" ]; then
-        while IFS=$'\t' read -r record_pid record_identity record_reason; do
-          if [ "$record_pid" = "$cycle_watcher_pid" ] && [ "$record_identity" = "$clean_identity" ]; then
-            continue
-          fi
-          printf '%s\t%s\t%s\n' "$record_pid" "$record_identity" "$record_reason" >> "$tmp" 2>/dev/null || true
-        done < "$WATCH_DELIVERY_LOG"
-      fi
-      mv -f "$tmp" "$WATCH_DELIVERY_LOG" 2>/dev/null || rm -f "$tmp" 2>/dev/null || true
-    fi
+  return 1
+}
+
+# Close a cycle whose reason line this arm could not read against the bounded
+# terminal-delivery ledger the watcher publishes before releasing its lock.
+close_unobserved_cycle() {
+  if consume_delivery_record; then
     printf '%s\n' "$OWNER_DELIVERED_CLOSE"
     return 0
   fi
@@ -503,6 +514,7 @@ owned_child_finished() {
     reason_type=$(watch_output_reason_type "$child_out")
     cycle_log_append "$rc" "$signal" "$reason_type" none
     print_watch_output "$child_out"
+    consume_delivery_record || true
     rm -f "$child_out" 2>/dev/null || true
     child=
     child_out=

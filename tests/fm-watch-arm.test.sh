@@ -85,6 +85,8 @@ test_attached_arm_reports_the_delivered_wake() {
     || fail "attached arm reported a delivered wake as a failed cycle: $(cat "$armout")"
   grep -qF 'watcher: cycle closed actionably (reason delivered by its owner arm)' "$armout" \
     || fail "attached arm did not report the owner-delivered close: $(cat "$armout")"
+  [ ! -s "$state/.watch-deliveries.log" ] \
+    || fail "the delivered wake record was left behind after a direct close: $(cat "$state/.watch-deliveries.log")"
   expect_code 0 "$status" "an attached arm whose cycle delivered a wake must close successfully"
   grep -q 'reason=attached-delivered-wake' "$state/.watch-cycle-exits.log" \
     || fail "the delivered-wake close was not classified in the lifecycle ledger"
