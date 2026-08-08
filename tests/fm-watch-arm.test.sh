@@ -182,7 +182,7 @@ test_attached_arm_keeps_the_owner_delivery_readable_for_later_observers() {
 }
 
 test_watch_delivery_compacts_stale_records_without_losing_fresh_delivery() {
-  local dir state fresh_ts stale_ts log_count log_bytes
+  local dir state fresh_ts stale_ts log_count
   dir=$(make_case watch-delivery-compact)
   state="$dir/state"
   fresh_ts=$(date +%s)

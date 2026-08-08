@@ -60,7 +60,7 @@ watch_delivery_compact() {
     ''|*[!0-9]*) lines=0 ;;
   esac
   if [ "$lines" -gt "$WATCH_DELIVERY_KEEP_LINES" ]; then
-    tail -n "$WATCH_DELIVERY_KEEP_LINES" "$stale" 2>/dev/null > "$stale.lines" 2>/dev/null \
+    tail -n "$WATCH_DELIVERY_KEEP_LINES" "$stale" > "$stale.lines" 2>/dev/null \
       && mv -f "$stale.lines" "$stale" 2>/dev/null
   fi
   size=$(wc -c < "$stale" 2>/dev/null | tr -d '[:space:]')
@@ -68,7 +68,7 @@ watch_delivery_compact() {
     ''|*[!0-9]*) size=0 ;;
   esac
   if [ "$size" -gt "$WATCH_DELIVERY_MAX_BYTES" ]; then
-    tail -c "$WATCH_DELIVERY_MAX_BYTES" "$stale" 2>/dev/null > "$stale.bytes" 2>/dev/null \
+    tail -c "$WATCH_DELIVERY_MAX_BYTES" "$stale" > "$stale.bytes" 2>/dev/null \
       && awk 'NR > 1 || /^[0-9]+\t/' "$stale.bytes" > "$stale" 2>/dev/null
   fi
   cat "$stale" "$fresh" > "$tmp" 2>/dev/null || return 0
