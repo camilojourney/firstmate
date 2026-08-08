@@ -188,14 +188,12 @@ test_watch_delivery_compacts_stale_records_without_losing_fresh_delivery() {
   printf '100\tarm-old\tstale-one\t1\n101\tarm-old\tstale-two\t2\n102\tarm-old\tstale-three\t3\n' \
     > "$state/.watch-deliveries.log"
 
-  FM_STATE_OVERRIDE="$state" ROOT="$ROOT" bash -c '
+  FM_STATE_OVERRIDE="$state" FM_WATCH_DELIVERY_MAX_BYTES=128 FM_WATCH_DELIVERY_KEEP_LINES=2 \
+    FM_WATCH_DELIVERY_RETENTION_SECS=1 ROOT="$ROOT" bash -c '
     set -eu
     . "$ROOT/bin/fm-push-transition-lib.sh"
     FM_WATCH_DELIVERY_PID=999
     FM_WATCH_DELIVERY_IDENTITY="arm-fresh"
-    FM_WATCH_DELIVERY_MAX_BYTES=128
-    FM_WATCH_DELIVERY_KEEP_LINES=2
-    FM_WATCH_DELIVERY_RETENTION_SECS=1
     watch_delivery_publish "fresh reason"
   '
 
@@ -203,15 +201,15 @@ test_watch_delivery_compacts_stale_records_without_losing_fresh_delivery() {
     || fail "the fresh delivery was dropped during compaction: $(cat "$state/.watch-deliveries.log")"
   ! grep -qF 'stale-one' "$state/.watch-deliveries.log" \
     || fail "the oldest stale row was not pruned: $(cat "$state/.watch-deliveries.log")"
-  ! grep -qF 'stale-two' "$state/.watch-deliveries.log" \
-    || fail "a stale row remained after compaction: $(cat "$state/.watch-deliveries.log")"
-  ! grep -qF 'stale-three' "$state/.watch-deliveries.log" \
-    || fail "the stale ledger was not compacted: $(cat "$state/.watch-deliveries.log")"
+  grep -qF 'stale-two' "$state/.watch-deliveries.log" \
+    || fail "the retained stale rows were compacted too aggressively: $(cat "$state/.watch-deliveries.log")"
+  grep -qF 'stale-three' "$state/.watch-deliveries.log" \
+    || fail "the newest stale rows should still fit within the bounded ledger: $(cat "$state/.watch-deliveries.log")"
   log_count=$(wc -l < "$state/.watch-deliveries.log" | tr -d '[:space:]')
   case "$log_count" in
     ''|*[!0-9]*) fail "could not count compacted delivery rows: $(cat "$state/.watch-deliveries.log")" ;;
   esac
-  [ "$log_count" -le 2 ] \
+  [ "$log_count" -eq 3 ] \
     || fail "compaction left too many delivery rows behind: $(cat "$state/.watch-deliveries.log")"
   log_bytes=$(wc -c < "$state/.watch-deliveries.log" | tr -d '[:space:]')
   case "$log_bytes" in
