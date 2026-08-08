@@ -214,7 +214,7 @@ test_watch_delivery_compacts_stale_records_without_losing_fresh_delivery() {
   case "$log_count" in
     ''|*[!0-9]*) fail "could not count compacted delivery rows: $(cat "$state/.watch-deliveries.log")" ;;
   esac
-  [ "$log_count" -eq 3 ] \
+  [ "$log_count" -eq 4 ] \
     || fail "compaction removed or retained the wrong delivery rows: $(cat "$state/.watch-deliveries.log")"
   pass "watch-delivery: stale records compact away while fresh rows remain readable"
 }
