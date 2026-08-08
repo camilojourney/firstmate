@@ -31,7 +31,7 @@ case "$WATCH_DELIVERY_KEEP_LINES" in ''|*[!0-9]*|0) WATCH_DELIVERY_KEEP_LINES=64
 case "$WATCH_DELIVERY_RETENTION_SECS" in ''|*[!0-9]*|0) WATCH_DELIVERY_RETENTION_SECS=3600 ;; esac
 
 watch_delivery_compact() {
-  local now cutoff tmp fresh stale fresh_lines stale_lines stale_size
+  local now cutoff tmp fresh stale lines size
   [ -f "$WATCH_DELIVERY_LOG" ] || return 0
   now=$(date +%s)
   cutoff=$((now - WATCH_DELIVERY_RETENTION_SECS))
@@ -55,25 +55,23 @@ watch_delivery_compact() {
       close(stale)
     }
   ' "$WATCH_DELIVERY_LOG" 2>/dev/null || return 0
-  if [ -s "$stale" ]; then
-    stale_lines=$(wc -l < "$stale" 2>/dev/null | tr -d '[:space:]')
-    case "$stale_lines" in
-      ''|*[!0-9]*) stale_lines=0 ;;
-    esac
-    if [ "$stale_lines" -gt "$WATCH_DELIVERY_KEEP_LINES" ]; then
-      tail -n "$WATCH_DELIVERY_KEEP_LINES" "$stale" 2>/dev/null > "$tmp.lines" 2>/dev/null \
-        && mv -f "$tmp.lines" "$stale" 2>/dev/null
-    fi
-    stale_size=$(wc -c < "$stale" 2>/dev/null | tr -d '[:space:]')
-    case "$stale_size" in
-      ''|*[!0-9]*) stale_size=0 ;;
-    esac
-    if [ "$stale_size" -gt "$WATCH_DELIVERY_MAX_BYTES" ]; then
-      tail -c "$WATCH_DELIVERY_MAX_BYTES" "$stale" 2>/dev/null > "$tmp.bytes" 2>/dev/null \
-        && awk 'NR > 1 || /^[0-9]+\t/' "$tmp.bytes" > "$stale" 2>/dev/null
-    fi
+  cat "$stale" "$fresh" > "$tmp" 2>/dev/null || return 0
+  lines=$(wc -l < "$tmp" 2>/dev/null | tr -d '[:space:]')
+  case "$lines" in
+    ''|*[!0-9]*) lines=0 ;;
+  esac
+  if [ "$lines" -gt "$WATCH_DELIVERY_KEEP_LINES" ]; then
+    tail -n "$WATCH_DELIVERY_KEEP_LINES" "$tmp" 2>/dev/null > "$tmp.lines" 2>/dev/null \
+      && mv -f "$tmp.lines" "$tmp" 2>/dev/null
   fi
-  cat "$fresh" "$stale" > "$tmp" 2>/dev/null || return 0
+  size=$(wc -c < "$tmp" 2>/dev/null | tr -d '[:space:]')
+  case "$size" in
+    ''|*[!0-9]*) size=0 ;;
+  esac
+  if [ "$size" -gt "$WATCH_DELIVERY_MAX_BYTES" ]; then
+    tail -c "$WATCH_DELIVERY_MAX_BYTES" "$tmp" 2>/dev/null > "$tmp.bytes" 2>/dev/null \
+      && awk 'NR > 1 || /^[0-9]+\t/' "$tmp.bytes" > "$tmp" 2>/dev/null
+  fi
   mv -f "$tmp" "$WATCH_DELIVERY_LOG" 2>/dev/null || true
   rm -f "$tmp" "$tmp.lines" "$tmp.bytes" "$fresh" "$stale" 2>/dev/null || true
 }
