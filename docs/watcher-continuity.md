@@ -44,6 +44,7 @@ An attached arm follows verified identity-matched successors and reports the sam
 
 The arm layer appends one tab-separated record per observed cycle to `state/.watch-cycle-exits.log`.
 Each record includes arm and watcher PIDs, the resolved confirmation window, start and end timestamps, exit code and signal, classified reason, beacon age, lock identity before and after close, and successor disposition.
+On confirmation timeout, the arm keeps the typed nonzero `watcher: FAILED - no live watcher with a fresh beacon` result, and if a short `no-mistakes daemon status` probe times out it adds a bounded hint that the daemon socket may be wedged before first beacon.
 The file is size-capped through `FM_WATCH_CYCLE_LOG_MAX_BYTES` and `FM_WATCH_CYCLE_LOG_KEEP_LINES`.
 `state/.watch-triage.log` remains only the watcher's bounded absorbed-wake debug log and carries no lifecycle semantics.
 
