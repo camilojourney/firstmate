@@ -23,6 +23,43 @@ FM_WATCH_DELIVERY_PID=
 FM_WATCH_DELIVERY_IDENTITY=
 WATCH_DELIVERY_LOG="$STATE/.watch-deliveries.log"
 WATCH_DELIVERY_LOCK="$STATE/.watch-deliveries.lock"
+WATCH_DELIVERY_MAX_BYTES=${FM_WATCH_DELIVERY_MAX_BYTES:-65536}
+WATCH_DELIVERY_KEEP_LINES=${FM_WATCH_DELIVERY_KEEP_LINES:-64}
+WATCH_DELIVERY_RETENTION_SECS=${FM_WATCH_DELIVERY_RETENTION_SECS:-3600}
+case "$WATCH_DELIVERY_MAX_BYTES" in ''|*[!0-9]*|0) WATCH_DELIVERY_MAX_BYTES=65536 ;; esac
+case "$WATCH_DELIVERY_KEEP_LINES" in ''|*[!0-9]*|0) WATCH_DELIVERY_KEEP_LINES=64 ;; esac
+case "$WATCH_DELIVERY_RETENTION_SECS" in ''|*[!0-9]*|0) WATCH_DELIVERY_RETENTION_SECS=3600 ;; esac
+
+watch_delivery_compact() {
+  local now cutoff tmp raw size lines
+  [ -f "$WATCH_DELIVERY_LOG" ] || return 0
+  now=$(date +%s)
+  cutoff=$((now - WATCH_DELIVERY_RETENTION_SECS))
+  tmp="$WATCH_DELIVERY_LOG.tmp.$FM_WATCH_DELIVERY_PID"
+  raw="$tmp.raw"
+  awk -F '\t' -v cutoff="$cutoff" '
+    $4 ~ /^[0-9]+$/ && $4 >= cutoff { print $0 }
+  ' "$WATCH_DELIVERY_LOG" > "$tmp" 2>/dev/null || return 0
+  lines=$(wc -l < "$tmp" 2>/dev/null | tr -d '[:space:]')
+  case "$lines" in
+    ''|*[!0-9]*) lines=0 ;;
+  esac
+  if [ "$lines" -gt "$WATCH_DELIVERY_KEEP_LINES" ]; then
+    tail -n "$WATCH_DELIVERY_KEEP_LINES" "$tmp" 2>/dev/null > "$raw" 2>/dev/null \
+      && mv -f "$raw" "$tmp" 2>/dev/null
+  fi
+  size=$(wc -c < "$tmp" 2>/dev/null | tr -d '[:space:]')
+  case "$size" in
+    ''|*[!0-9]*) size=0 ;;
+  esac
+  if [ "$size" -gt "$WATCH_DELIVERY_MAX_BYTES" ]; then
+    tail -n "$WATCH_DELIVERY_KEEP_LINES" "$tmp" 2>/dev/null \
+      | tail -c "$WATCH_DELIVERY_MAX_BYTES" > "$raw" 2>/dev/null \
+      && awk 'NR > 1 || /^[0-9]+\t/' "$raw" > "$tmp" 2>/dev/null
+  fi
+  mv -f "$tmp" "$WATCH_DELIVERY_LOG" 2>/dev/null || true
+  rm -f "$tmp" "$raw" 2>/dev/null || true
+}
 
 watch_delivery_clean_identity() {
   printf '%s' "$1" | tr '\t\r\n' '   '
@@ -41,10 +78,14 @@ watch_delivery_publish() {
     sleep 0.02
     i=$((i + 1))
   done
-  printf '%s\t%s\t%s\n' \
+  printf '%s\t%s\t%s\t%s\n' \
     "$FM_WATCH_DELIVERY_PID" \
     "$(watch_delivery_clean_identity "$FM_WATCH_DELIVERY_IDENTITY")" \
-    "$(watch_delivery_clean_reason "$reason")" >> "$WATCH_DELIVERY_LOG" 2>/dev/null || true
+    "$(watch_delivery_clean_reason "$reason")" \
+    "$(date +%s)" >> "$WATCH_DELIVERY_LOG" 2>/dev/null || true
+  if [ -f "$WATCH_DELIVERY_LOG" ]; then
+    watch_delivery_compact
+  fi
   fm_lock_release "$WATCH_DELIVERY_LOCK"
 }
 
