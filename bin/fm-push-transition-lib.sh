@@ -38,7 +38,6 @@ watch_delivery_publish() {
   [ -n "$FM_WATCH_DELIVERY_IDENTITY" ] || return 0
   i=0
   while ! fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; do
-    [ "$i" -lt 20 ] || return 0
     sleep 0.02
     i=$((i + 1))
   done

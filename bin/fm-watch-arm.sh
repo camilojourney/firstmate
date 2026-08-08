@@ -289,9 +289,6 @@ find_delivery_record() {
   clean_identity=$(printf '%s' "$cycle_watcher_identity" | tr '\t\r\n' '   ')
   i=0
   while ! fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; do
-    [ "$i" -lt 20 ] || {
-      return 1
-    }
     sleep 0.02
     i=$((i + 1))
   done
@@ -299,6 +296,7 @@ find_delivery_record() {
     while IFS=$'\t' read -r record_pid record_identity record_reason; do
       if [ "$record_pid" = "$cycle_watcher_pid" ] && [ "$record_identity" = "$clean_identity" ]; then
         WATCH_DELIVERY_MATCHED_REASON=$record_reason
+        break
       fi
     done < "$WATCH_DELIVERY_LOG"
   fi
