@@ -44,10 +44,10 @@
 #
 # Every observed watcher cycle appends one tab-separated lifecycle record to
 # state/.watch-cycle-exits.log. The arm layer owns that bounded ledger; it records
-# arm/watcher identities, timestamps, exit/signal classification, beacon age,
-# lock identity before and after close, and successor disposition. The separate
-# state/.watch-triage.log remains exclusively the watcher's absorbed-wake debug
-# log and is never written here.
+# arm/watcher identities, the resolved confirmation window, timestamps, exit/signal
+# classification, beacon age, lock identity before and after close, and successor
+# disposition. The separate state/.watch-triage.log remains exclusively the
+# watcher's absorbed-wake debug log and is never written here.
 #
 # --restart: stop ONLY this FM_HOME's watcher (the pid recorded in THIS home's
 # state/.watch.lock) and own a fresh cycle, or attach if a verified live peer
@@ -70,8 +70,14 @@ GRACE=${FM_GUARD_GRACE:-300}
 # How long to wait for a freshly forked watcher to acquire the lock and beat.
 # Git Bash/MSYS pays a much higher fork cost while the watcher completes its
 # required pre-lock migration, so its bounded default covers that cold start.
+# macOS needs a much larger bounded window: on a Mac Mini whose baseline load
+# runs 8-15 from OrbStack and Chrome, 10s repeatedly terminated the watcher
+# before its first beacon while a 120s window succeeded every time, so arming
+# must not depend on an interactive shell export. FM_ARM_CONFIRM_TIMEOUT always
+# overrides the platform default.
 case "${OSTYPE:-}" in
   msys*|mingw*|cygwin*) ARM_CONFIRM_DEFAULT=30 ;;
+  darwin*) ARM_CONFIRM_DEFAULT=120 ;;
   *) ARM_CONFIRM_DEFAULT=10 ;;
 esac
 CONFIRM_TIMEOUT=${FM_ARM_CONFIRM_TIMEOUT:-$ARM_CONFIRM_DEFAULT}
@@ -141,10 +147,11 @@ cycle_log_append() {
     sleep 0.02
     i=$((i + 1))
   done
-  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\tsuccessor=%s\n' \
+  printf 'arm_pid=%s\twatcher_pid=%s\torigin=%s\tconfirm_timeout=%s\tstarted_at=%s\tended_at=%s\texit_code=%s\tsignal=%s\treason=%s\tbeacon_age=%s\tlock_before=%s\tlock_after=%s\tsuccessor=%s\n' \
     "$ARM_PID" \
     "$(cycle_clean_field "$cycle_watcher_pid")" \
     "$(cycle_clean_field "$cycle_origin")" \
+    "$CONFIRM_TIMEOUT" \
     "$cycle_started_at" \
     "$ended_at" \
     "$(cycle_clean_field "$exit_code")" \
@@ -324,6 +331,30 @@ print_watch_output() {
   [ -s "$out" ] && cat "$out"
 }
 
+# Bounded, read-only liveness probe for the separate failure mode where a wedged
+# no-mistakes daemon socket stalls the watcher before its first beacon. The CLI
+# hangs when the socket is wedged, so only a probe killed by its own short
+# timeout adds a hint to the FAILED line; a healthy or stopped daemon and a
+# missing CLI stay silent. Never blocks the failure report by more than the
+# probe bound, and the typed FAILED line and nonzero exit are unchanged.
+no_mistakes_wedge_hint() {
+  local rc
+  command -v no-mistakes >/dev/null 2>&1 || return 0
+  rc=0
+  if command -v timeout >/dev/null 2>&1; then
+    timeout 3 no-mistakes daemon status >/dev/null 2>&1 || rc=$?
+  elif command -v gtimeout >/dev/null 2>&1; then
+    gtimeout 3 no-mistakes daemon status >/dev/null 2>&1 || rc=$?
+  elif command -v perl >/dev/null 2>&1; then
+    # shellcheck disable=SC2016  # single quotes are deliberate: Perl expands its own variables.
+    perl -e 'my $pid = fork; die "fork failed" unless defined $pid; if (!$pid) { exec @ARGV } local $SIG{ALRM} = sub { kill "TERM", $pid; select undef, undef, undef, 0.2; kill "KILL", $pid; exit 124 }; alarm 3; waitpid $pid, 0; exit($? >> 8)' no-mistakes daemon status >/dev/null 2>&1 || rc=$?
+  else
+    return 0
+  fi
+  [ "$rc" -eq 124 ] || return 0
+  printf '%s' 'no-mistakes daemon socket wedged (daemon status probe timed out); check "no-mistakes daemon status" - a wedged daemon delays watcher startup before its first beacon'
+}
+
 mode=arm
 case "${1:-}" in
   ''|arm|--arm) mode=arm ;;
@@ -494,5 +525,10 @@ cleanup_child
 wait "$child" 2>/dev/null
 rc=$?
 cycle_log_append "$rc" "$(cycle_signal_name "$rc")" confirmation-timeout none
-echo "watcher: FAILED - no live watcher with a fresh beacon"
+hint=$(no_mistakes_wedge_hint)
+if [ -n "$hint" ]; then
+  echo "watcher: FAILED - no live watcher with a fresh beacon; $hint"
+else
+  echo "watcher: FAILED - no live watcher with a fresh beacon"
+fi
 exit 1
