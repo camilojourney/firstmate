@@ -793,6 +793,95 @@ test_arm_fails_loud_when_no_fresh_watcher_confirmable() {
   pass "arm reports FAILED and exits non-zero when no fresh watcher can be confirmed"
 }
 
+test_arm_ledger_records_resolved_confirm_timeout() {
+  # The arm resolves its confirmation window from the platform default unless
+  # FM_ARM_CONFIRM_TIMEOUT overrides it, and the lifecycle ledger records the
+  # resolved window on every cycle. Asserting the ledger keeps the default and
+  # override behavior regression-tested without waiting out a full window (120s
+  # on macOS): each row starts a real watcher through the arm, ends the cycle
+  # with HUP, and checks the recorded window. OSTYPE is inherited from the env by
+  # the arm's shebang bash, so forcing it selects the platform default anywhere.
+  local row dir state fakebin armout armpid expect envspec platform i
+  while IFS='|' read -r platform envspec expect; do
+    case "$platform" in darwin|msys|other|override) ;; *) fail "bad row $platform" ;; esac
+    dir=$(make_case "arm-confirm-window-$platform")
+    state="$dir/state"
+    fakebin="$dir/fakebin"
+    armout="$dir/arm.out"
+    mark_pr_check_migration_complete "$state"
+    # shellcheck disable=SC2086  # $envspec is a deliberate env-prefix fragment passed through env
+    PATH="$fakebin:$PATH" FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 env $envspec "$WATCH_ARM" > "$armout" &
+    armpid=$!
+    i=0
+    while [ "$i" -lt 80 ]; do
+      grep -qF 'watcher: started pid=' "$armout" 2>/dev/null && break
+      sleep 0.1
+      i=$((i + 1))
+    done
+    grep -qF 'watcher: started pid=' "$armout" || fail "arm ($platform) did not start a watcher: $(cat "$armout")"
+    kill -HUP "$armpid" 2>/dev/null || fail "could not end the ($platform) cycle"
+    wait "$armpid" 2>/dev/null || true
+    grep -F "arm_pid=$armpid" "$state/.watch-cycle-exits.log" | grep -F "confirm_timeout=$expect" >/dev/null \
+      || fail "arm ($platform) ledger did not record confirm_timeout=$expect: $(grep -F "arm_pid=$armpid" "$state/.watch-cycle-exits.log")"
+  done <<EOF
+darwin|OSTYPE=darwin|120
+msys|OSTYPE=msys|30
+other|OSTYPE=linux|10
+override|OSTYPE=darwin FM_ARM_CONFIRM_TIMEOUT=1|1
+EOF
+  pass "arm ledger records the platform-default and overridden confirmation windows"
+}
+
+test_arm_confirmation_failure_surfaces_wedged_no_mistakes_daemon() {
+  # On confirmation timeout the arm probes the no-mistakes daemon socket with a
+  # short bounded read. A probe killed by its own timeout (wedged socket) adds a
+  # daemon hint to the FAILED line; a responsive daemon stays silent. A watcher
+  # that is alive but can never be confirmed - the fake ps refuses every identity
+  # read, so the lock identity is never published - drives the arm to the
+  # confirmation-timeout block with no external process leaks.
+  local row dir state fakebin armout armpid status
+  for row in wedged healthy; do
+    dir=$(make_case "arm-confirm-daemon-$row")
+    state="$dir/state"
+    fakebin="$dir/fakebin"
+    armout="$dir/arm.out"
+    mark_pr_check_migration_complete "$state"
+    if [ "$row" = wedged ]; then
+      cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+sleep 30
+SH
+    else
+      cat > "$fakebin/no-mistakes" <<'SH'
+#!/usr/bin/env bash
+exit 0
+SH
+    fi
+    chmod +x "$fakebin/no-mistakes"
+    cat > "$fakebin/ps" <<'SH'
+#!/usr/bin/env bash
+exit 1
+SH
+    chmod +x "$fakebin/ps"
+    PATH="$fakebin:$PATH" FM_STATE_OVERRIDE="$state" FM_POLL=5 FM_SIGNAL_GRACE=1 FM_CHECK_INTERVAL=999999 FM_HEARTBEAT=999999 FM_ARM_CONFIRM_TIMEOUT=1 "$WATCH_ARM" > "$armout" &
+    armpid=$!
+    wait_for_exit "$armpid" 120
+    status=$?
+    [ "$status" -ne 124 ] || fail "arm ($row) never returned after confirmation timeout"
+    [ "$status" -ne 0 ] || fail "arm ($row) exited zero on an unconfirmable watcher"
+    grep -F 'watcher: FAILED - no live watcher with a fresh beacon' "$armout" >/dev/null \
+      || fail "arm ($row) omitted the typed confirmation-timeout failure: $(cat "$armout")"
+    if [ "$row" = wedged ]; then
+      grep -F 'no-mistakes daemon socket wedged' "$armout" >/dev/null \
+        || fail "arm ($row) did not surface the wedged daemon hint: $(cat "$armout")"
+    else
+      ! grep -F 'no-mistakes daemon' "$armout" >/dev/null \
+        || fail "arm ($row) hinted at the daemon although the probe responded: $(cat "$armout")"
+    fi
+  done
+  pass "arm confirmation failure surfaces a wedged no-mistakes daemon socket and stays silent when the daemon responds"
+}
+
 test_cycle_exit_ledger_links_successor_and_stays_bounded() {
   local dir state fakebin armout check_file first_arm successor_arm successor_pid i size iteration
   dir=$(make_case cycle-ledger)
@@ -1037,5 +1126,7 @@ test_arm_hup_cleans_child_and_temp_output
 test_arm_propagates_immediate_wake_before_confirmation
 test_arm_waits_for_peer_beacon_after_child_stands_down
 test_arm_fails_loud_when_no_fresh_watcher_confirmable
+test_arm_ledger_records_resolved_confirm_timeout
+test_arm_confirmation_failure_surfaces_wedged_no_mistakes_daemon
 test_cycle_exit_ledger_links_successor_and_stays_bounded
 test_stopped_watcher_is_live_but_stale_then_exit_is_classified
