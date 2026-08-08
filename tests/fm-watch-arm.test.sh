@@ -182,14 +182,16 @@ test_attached_arm_keeps_the_owner_delivery_readable_for_later_observers() {
 }
 
 test_watch_delivery_compacts_stale_records_without_losing_fresh_delivery() {
-  local dir state fresh_ts log_count log_bytes
+  local dir state fresh_ts stale_ts log_count log_bytes
   dir=$(make_case watch-delivery-compact)
   state="$dir/state"
   fresh_ts=$(date +%s)
-  printf '100\tarm-fresh\tfresh-one\t%s\n101\tarm-fresh\tfresh-two\t%s\n' "$fresh_ts" "$fresh_ts" \
+  stale_ts=$((fresh_ts - 7200))
+  printf '100\tarm-stale\tstale-one\t%s\n101\tarm-stale\tstale-two\t%s\n102\tarm-fresh\tfresh-one\t%s\n103\tarm-fresh\tfresh-two\t%s\n' \
+    "$stale_ts" "$stale_ts" "$fresh_ts" "$fresh_ts" \
     > "$state/.watch-deliveries.log"
 
-  FM_STATE_OVERRIDE="$state" FM_WATCH_DELIVERY_MAX_BYTES=128 FM_WATCH_DELIVERY_KEEP_LINES=2 \
+  FM_STATE_OVERRIDE="$state" FM_WATCH_DELIVERY_MAX_BYTES=128 FM_WATCH_DELIVERY_KEEP_LINES=1 \
     FM_WATCH_DELIVERY_RETENTION_SECS=3600 ROOT="$ROOT" bash -c '
     set -eu
     . "$ROOT/bin/fm-push-transition-lib.sh"
@@ -200,22 +202,20 @@ test_watch_delivery_compacts_stale_records_without_losing_fresh_delivery() {
 
   grep -qF 'fresh reason' "$state/.watch-deliveries.log" \
     || fail "the fresh delivery was dropped during compaction: $(cat "$state/.watch-deliveries.log")"
-  ! grep -qF 'fresh-one' "$state/.watch-deliveries.log" \
-    || fail "the oldest fresh row was not trimmed by the bounded cap: $(cat "$state/.watch-deliveries.log")"
+  grep -qF 'fresh-one' "$state/.watch-deliveries.log" \
+    || fail "the oldest fresh row was evicted during compaction: $(cat "$state/.watch-deliveries.log")"
   grep -qF 'fresh-two' "$state/.watch-deliveries.log" \
     || fail "the latest fresh row should remain readable after compaction: $(cat "$state/.watch-deliveries.log")"
+  ! grep -qF 'stale-one' "$state/.watch-deliveries.log" \
+    || fail "the stale cap retained the oldest stale row: $(cat "$state/.watch-deliveries.log")"
+  grep -qF 'stale-two' "$state/.watch-deliveries.log" \
+    || fail "the newest stale row should remain after compaction: $(cat "$state/.watch-deliveries.log")"
   log_count=$(wc -l < "$state/.watch-deliveries.log" | tr -d '[:space:]')
   case "$log_count" in
     ''|*[!0-9]*) fail "could not count compacted delivery rows: $(cat "$state/.watch-deliveries.log")" ;;
   esac
-  [ "$log_count" -eq 2 ] \
-    || fail "compaction left too many delivery rows behind: $(cat "$state/.watch-deliveries.log")"
-  log_bytes=$(wc -c < "$state/.watch-deliveries.log" | tr -d '[:space:]')
-  case "$log_bytes" in
-    ''|*[!0-9]*) fail "could not measure compacted delivery size: $(cat "$state/.watch-deliveries.log")" ;;
-  esac
-  [ "$log_bytes" -le 128 ] \
-    || fail "compaction left the delivery log over the configured byte cap: $(cat "$state/.watch-deliveries.log")"
+  [ "$log_count" -eq 3 ] \
+    || fail "compaction removed or retained the wrong delivery rows: $(cat "$state/.watch-deliveries.log")"
   pass "watch-delivery: stale records compact away while fresh rows remain readable"
 }
 

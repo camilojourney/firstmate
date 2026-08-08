@@ -55,25 +55,25 @@ watch_delivery_compact() {
       close(stale)
     }
   ' "$WATCH_DELIVERY_LOG" 2>/dev/null || return 0
-  cat "$stale" "$fresh" > "$tmp" 2>/dev/null || return 0
-  lines=$(wc -l < "$tmp" 2>/dev/null | tr -d '[:space:]')
+  lines=$(wc -l < "$stale" 2>/dev/null | tr -d '[:space:]')
   case "$lines" in
     ''|*[!0-9]*) lines=0 ;;
   esac
   if [ "$lines" -gt "$WATCH_DELIVERY_KEEP_LINES" ]; then
-    tail -n "$WATCH_DELIVERY_KEEP_LINES" "$tmp" 2>/dev/null > "$tmp.lines" 2>/dev/null \
-      && mv -f "$tmp.lines" "$tmp" 2>/dev/null
+    tail -n "$WATCH_DELIVERY_KEEP_LINES" "$stale" 2>/dev/null > "$stale.lines" 2>/dev/null \
+      && mv -f "$stale.lines" "$stale" 2>/dev/null
   fi
-  size=$(wc -c < "$tmp" 2>/dev/null | tr -d '[:space:]')
+  size=$(wc -c < "$stale" 2>/dev/null | tr -d '[:space:]')
   case "$size" in
     ''|*[!0-9]*) size=0 ;;
   esac
   if [ "$size" -gt "$WATCH_DELIVERY_MAX_BYTES" ]; then
-    tail -c "$WATCH_DELIVERY_MAX_BYTES" "$tmp" 2>/dev/null > "$tmp.bytes" 2>/dev/null \
-      && awk 'NR > 1 || /^[0-9]+\t/' "$tmp.bytes" > "$tmp" 2>/dev/null
+    tail -c "$WATCH_DELIVERY_MAX_BYTES" "$stale" 2>/dev/null > "$stale.bytes" 2>/dev/null \
+      && awk 'NR > 1 || /^[0-9]+\t/' "$stale.bytes" > "$stale" 2>/dev/null
   fi
+  cat "$stale" "$fresh" > "$tmp" 2>/dev/null || return 0
   mv -f "$tmp" "$WATCH_DELIVERY_LOG" 2>/dev/null || true
-  rm -f "$tmp" "$tmp.lines" "$tmp.bytes" "$fresh" "$stale" 2>/dev/null || true
+  rm -f "$tmp" "$tmp.lines" "$tmp.bytes" "$stale.lines" "$stale.bytes" "$fresh" "$stale" 2>/dev/null || true
 }
 
 watch_delivery_clean_identity() {
