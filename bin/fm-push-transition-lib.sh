@@ -23,10 +23,6 @@ FM_WATCH_DELIVERY_PID=
 FM_WATCH_DELIVERY_IDENTITY=
 WATCH_DELIVERY_LOG="$STATE/.watch-deliveries.log"
 WATCH_DELIVERY_LOCK="$STATE/.watch-deliveries.lock"
-WATCH_DELIVERY_MAX_BYTES=${FM_WATCH_DELIVERY_MAX_BYTES:-65536}
-WATCH_DELIVERY_KEEP_LINES=${FM_WATCH_DELIVERY_KEEP_LINES:-64}
-case "$WATCH_DELIVERY_MAX_BYTES" in ''|*[!0-9]*|0) WATCH_DELIVERY_MAX_BYTES=65536 ;; esac
-case "$WATCH_DELIVERY_KEEP_LINES" in ''|*[!0-9]*|0) WATCH_DELIVERY_KEEP_LINES=64 ;; esac
 
 watch_delivery_clean_identity() {
   printf '%s' "$1" | tr '\t\r\n' '   '
@@ -37,7 +33,7 @@ watch_delivery_clean_reason() {
 }
 
 watch_delivery_publish() {
-  local reason=$1 i size tmp raw
+  local reason=$1 i
   [ -n "$FM_WATCH_DELIVERY_PID" ] || return 0
   [ -n "$FM_WATCH_DELIVERY_IDENTITY" ] || return 0
   i=0
@@ -50,21 +46,6 @@ watch_delivery_publish() {
     "$FM_WATCH_DELIVERY_PID" \
     "$(watch_delivery_clean_identity "$FM_WATCH_DELIVERY_IDENTITY")" \
     "$(watch_delivery_clean_reason "$reason")" >> "$WATCH_DELIVERY_LOG" 2>/dev/null || true
-  size=$(wc -c < "$WATCH_DELIVERY_LOG" 2>/dev/null | tr -d '[:space:]')
-  case "$size" in
-    ''|*[!0-9]*) ;;
-    *)
-      if [ "$size" -ge "$WATCH_DELIVERY_MAX_BYTES" ]; then
-        tmp="$WATCH_DELIVERY_LOG.tmp.$FM_WATCH_DELIVERY_PID"
-        raw="$tmp.raw"
-        tail -n "$WATCH_DELIVERY_KEEP_LINES" "$WATCH_DELIVERY_LOG" 2>/dev/null \
-          | tail -c "$WATCH_DELIVERY_MAX_BYTES" > "$raw" 2>/dev/null \
-          && awk 'NR > 1 || /^[0-9]+\t/' "$raw" > "$tmp" 2>/dev/null \
-          && mv -f "$tmp" "$WATCH_DELIVERY_LOG" 2>/dev/null
-        rm -f "$tmp" "$raw" 2>/dev/null || true
-      fi
-      ;;
-  esac
   fm_lock_release "$WATCH_DELIVERY_LOCK"
 }
 

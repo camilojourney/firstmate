@@ -160,7 +160,7 @@ function classifyClose(stdout: string, stderr: string, code: number | null, sign
   if (reason) return { kind: "actionable", message: reason };
   const lines = combined.split(/\r?\n/);
   const benignClose = lines.find((line) => /^watcher: cycle closed actionably\b/.test(line));
-  if (benignClose) return { kind: "benign", message: benignClose };
+  if (benignClose && code === 0 && !signal) return { kind: "benign", message: benignClose };
   const healthy = lines.find((line) => /^watcher: healthy\b/.test(line));
   if (healthy) {
     return {

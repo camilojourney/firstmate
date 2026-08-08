@@ -146,6 +146,95 @@ test_attached_arm_still_fails_on_a_wake_it_did_not_deliver() {
   pass "watch-arm: a cycle that delivered no wake of its own still fails loudly"
 }
 
+test_attached_arm_keeps_the_owner_delivery_until_it_is_read() {
+  local dir state armdir armout pidfile allowfile watch_pid watch_identity status i
+  dir=$(make_case attached-delivery-churn)
+  state="$dir/state"
+  armdir="$dir/bin"
+  armout="$dir/arm.out"
+  pidfile="$state/.watch.lock/pid"
+  allowfile="$state/allow-exit"
+  mkdir -p "$armdir"
+  cp "$ROOT/bin/fm-watch-arm.sh" "$armdir/fm-watch-arm.sh"
+  cp "$ROOT/bin/fm-wake-lib.sh" "$armdir/fm-wake-lib.sh"
+  cat > "$armdir/fm-watch.sh" <<'SH'
+#!/usr/bin/env bash
+set -u
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+# shellcheck source=bin/fm-wake-lib.sh
+. "$SCRIPT_DIR/fm-wake-lib.sh"
+mkdir -p "$STATE/.watch.lock"
+printf '%s\n' "$$" > "$STATE/.watch.lock/pid"
+printf '%s\n' "$FM_HOME" > "$STATE/.watch.lock/fm-home"
+printf '%s\n' "$SCRIPT_DIR/fm-watch.sh" > "$STATE/.watch.lock/watcher-path"
+fm_pid_identity "$$" > "$STATE/.watch.lock/pid-identity"
+touch "$STATE/.last-watcher-beat"
+while [ ! -e "${FM_ALLOW_EXIT_FILE:?}" ]; do
+  touch "$STATE/.last-watcher-beat"
+  sleep 0.05
+done
+rm -rf "$STATE/.watch.lock" 2>/dev/null || true
+rm -f "$STATE/.last-watcher-beat" 2>/dev/null || true
+exit 0
+SH
+  chmod +x "$armdir/fm-watch.sh" "$armdir/fm-watch-arm.sh" "$armdir/fm-wake-lib.sh"
+  FM_HOME="$dir" FM_STATE_OVERRIDE="$state" FM_ARM_CONFIRM_TIMEOUT=1 FM_WATCH_DELIVERY_MAX_BYTES=1024 FM_WATCH_DELIVERY_KEEP_LINES=4 \
+    FM_ALLOW_EXIT_FILE="$allowfile" "$armdir/fm-watch-arm.sh" > "$armout" &
+  ARM_PID=$!
+  i=0
+  while [ "$i" -lt 100 ]; do
+    [ -s "$pidfile" ] && break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  [ -s "$pidfile" ] || fail "attached arm did not spawn a watcher child"
+  i=0
+  while [ "$i" -lt 100 ]; do
+    watch_pid=$(cat "$pidfile" 2>/dev/null || true)
+    [ -n "$watch_pid" ] || { sleep 0.05; i=$((i + 1)); continue; }
+    grep -qF "watcher: started pid=$watch_pid (beacon fresh)" "$armout" 2>/dev/null && break
+    sleep 0.05
+    i=$((i + 1))
+  done
+  watch_pid=$(cat "$pidfile" 2>/dev/null || true)
+  [ -n "$watch_pid" ] || fail "could not read the watcher child pid"
+  watch_identity=$(
+    FM_STATE_OVERRIDE="$state" bash -c '
+      # shellcheck disable=SC1090,SC1091
+      . "$1"
+      fm_pid_identity "$2"
+    ' _ "$armdir/fm-wake-lib.sh" "$watch_pid"
+  )
+  [ -n "$watch_identity" ] || fail "could not resolve the watcher child identity"
+  grep -qF "watcher: started pid=$watch_pid (beacon fresh)" "$armout" \
+    || fail "attached arm did not confirm the live watcher: $(cat "$armout")"
+  FM_STATE_OVERRIDE="$state" bash -c '
+    # shellcheck disable=SC1090,SC1091
+    . "$1"
+    FM_WATCH_DELIVERY_PID="$2" FM_WATCH_DELIVERY_IDENTITY="$3" watch_delivery_publish "owner-delivered reason"
+    i=0
+    while [ "$i" -lt 24 ]; do
+      pid=$((100000 + i))
+      FM_WATCH_DELIVERY_PID="$pid" FM_WATCH_DELIVERY_IDENTITY="noise-$i" watch_delivery_publish "noise reason $i xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx"
+      i=$((i + 1))
+    done
+  ' _ "$ROOT/bin/fm-push-transition-lib.sh" "$watch_pid" "$watch_identity"
+  awk -F '\t' -v pid="$watch_pid" -v identity="$watch_identity" '$1 == pid && $2 == identity { found = 1 } END { exit found ? 0 : 1 }' \
+    "$state/.watch-deliveries.log" \
+    || fail "the owner-delivered record vanished before the arm read it"
+  printf 'go\n' > "$allowfile"
+  wait_for_exit "$ARM_PID" 120
+  status=$?
+  grep -qF 'watcher: cycle closed actionably (reason delivered by its owner arm)' "$armout" \
+    || fail "attached arm did not report the owner-delivered close after the delivery churn: $(cat "$armout")"
+  expect_code 0 "$status" "an attached arm must still close successfully after delivery churn"
+  if [ -f "$state/.watch-deliveries.log" ] && awk -F '\t' -v pid="$watch_pid" -v identity="$watch_identity" '$1 == pid && $2 == identity { found = 1 } END { exit found ? 0 : 1 }' "$state/.watch-deliveries.log"; then
+    fail "the consumed owner-delivered record remained after close"
+  fi
+  pass "watch-arm: the owner-delivered record survives churn until the arm consumes it"
+}
+
 test_attached_arm_reports_the_delivered_wake
 test_attached_arm_reports_the_delivered_wake_after_drain
 test_attached_arm_still_fails_on_a_wake_it_did_not_deliver
+test_attached_arm_keeps_the_owner_delivery_until_it_is_read

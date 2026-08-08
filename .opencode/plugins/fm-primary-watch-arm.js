@@ -136,7 +136,7 @@ function classifyArmClose(stdout, stderr, code, signal) {
   const reason = lines.find((line) => /^(signal:|stale:|check:|heartbeat($|:))/.test(line));
   if (reason) return { kind: "actionable", message: reason };
   const benignClose = lines.find((line) => /^watcher: cycle closed actionably\b/.test(line));
-  if (benignClose) return { kind: "benign", message: benignClose };
+  if (benignClose && code === 0 && !signal) return { kind: "benign", message: benignClose };
   const healthy = lines.find((line) => /^watcher: healthy\b/.test(line));
   if (healthy) {
     return {
