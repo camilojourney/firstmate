@@ -19,6 +19,90 @@ FM_PUSH_TRANSITION_LIB_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TRIAGE_LOG="$STATE/.watch-triage.log"
 TRIAGE_LOG_MAX_BYTES=${FM_WATCH_TRIAGE_LOG_MAX_BYTES:-262144}
 FM_WAKE_POST_OUTPUT_ACTION=
+FM_WATCH_DELIVERY_PID=
+FM_WATCH_DELIVERY_IDENTITY=
+WATCH_DELIVERY_LOG="$STATE/.watch-deliveries.log"
+WATCH_DELIVERY_LOCK="$STATE/.watch-deliveries.lock"
+WATCH_DELIVERY_MAX_BYTES=${FM_WATCH_DELIVERY_MAX_BYTES:-65536}
+WATCH_DELIVERY_KEEP_LINES=${FM_WATCH_DELIVERY_KEEP_LINES:-64}
+WATCH_DELIVERY_RETENTION_SECS=${FM_WATCH_DELIVERY_RETENTION_SECS:-3600}
+case "$WATCH_DELIVERY_MAX_BYTES" in ''|*[!0-9]*|0) WATCH_DELIVERY_MAX_BYTES=65536 ;; esac
+case "$WATCH_DELIVERY_KEEP_LINES" in ''|*[!0-9]*|0) WATCH_DELIVERY_KEEP_LINES=64 ;; esac
+case "$WATCH_DELIVERY_RETENTION_SECS" in ''|*[!0-9]*|0) WATCH_DELIVERY_RETENTION_SECS=3600 ;; esac
+
+watch_delivery_compact() {
+  local now cutoff tmp fresh stale lines size
+  [ -f "$WATCH_DELIVERY_LOG" ] || return 0
+  now=$(date +%s)
+  cutoff=$((now - WATCH_DELIVERY_RETENTION_SECS))
+  tmp="$WATCH_DELIVERY_LOG.tmp.$FM_WATCH_DELIVERY_PID"
+  fresh="$tmp.fresh"
+  stale="$tmp.stale"
+  : > "$fresh" 2>/dev/null || return 0
+  : > "$stale" 2>/dev/null || return 0
+  awk -F '\t' -v cutoff="$cutoff" -v fresh="$fresh" -v stale="$stale" '
+    $4 ~ /^[0-9]+$/ {
+      if ($4 >= cutoff) {
+        print >> fresh
+      } else {
+        print >> stale
+      }
+      next
+    }
+    { print >> fresh }
+    END {
+      close(fresh)
+      close(stale)
+    }
+  ' "$WATCH_DELIVERY_LOG" 2>/dev/null || return 0
+  lines=$(wc -l < "$stale" 2>/dev/null | tr -d '[:space:]')
+  case "$lines" in
+    ''|*[!0-9]*) lines=0 ;;
+  esac
+  if [ "$lines" -gt "$WATCH_DELIVERY_KEEP_LINES" ]; then
+    tail -n "$WATCH_DELIVERY_KEEP_LINES" "$stale" > "$stale.lines" 2>/dev/null \
+      && mv -f "$stale.lines" "$stale" 2>/dev/null
+  fi
+  size=$(wc -c < "$stale" 2>/dev/null | tr -d '[:space:]')
+  case "$size" in
+    ''|*[!0-9]*) size=0 ;;
+  esac
+  if [ "$size" -gt "$WATCH_DELIVERY_MAX_BYTES" ]; then
+    tail -c "$WATCH_DELIVERY_MAX_BYTES" "$stale" > "$stale.bytes" 2>/dev/null \
+      && awk 'NR > 1 || /^[0-9]+\t/' "$stale.bytes" > "$stale" 2>/dev/null
+  fi
+  cat "$stale" "$fresh" > "$tmp" 2>/dev/null || return 0
+  mv -f "$tmp" "$WATCH_DELIVERY_LOG" 2>/dev/null || true
+  rm -f "$tmp" "$tmp.lines" "$tmp.bytes" "$stale.lines" "$stale.bytes" "$fresh" "$stale" 2>/dev/null || true
+}
+
+watch_delivery_clean_identity() {
+  printf '%s' "$1" | tr '\t\r\n' '   '
+}
+
+watch_delivery_clean_reason() {
+  printf '%s' "$1" | tr '\t\r\n' '   ' | cut -c1-4096
+}
+
+watch_delivery_publish() {
+  local reason=$1 i
+  [ -n "$FM_WATCH_DELIVERY_PID" ] || return 0
+  [ -n "$FM_WATCH_DELIVERY_IDENTITY" ] || return 0
+  i=0
+  while ! fm_lock_try_acquire "$WATCH_DELIVERY_LOCK"; do
+    sleep 0.02
+    i=$((i + 1))
+  done
+  printf '%s\t%s\t%s\t%s\n' \
+    "$FM_WATCH_DELIVERY_PID" \
+    "$(watch_delivery_clean_identity "$FM_WATCH_DELIVERY_IDENTITY")" \
+    "$(watch_delivery_clean_reason "$reason")" \
+    "$(date +%s)" >> "$WATCH_DELIVERY_LOG" 2>/dev/null || true
+  if [ -f "$WATCH_DELIVERY_LOG" ]; then
+    watch_delivery_compact
+  fi
+  fm_lock_release "$WATCH_DELIVERY_LOCK"
+}
 
 # Append one bounded best-effort line for an absorbed supervision event.
 triage_log() {
@@ -39,9 +123,11 @@ wake() {
     heartbeat*) echo $(( $(cat "$STATE/.heartbeat-streak" 2>/dev/null || echo 0) + 1 )) > "$STATE/.heartbeat-streak" ;;
     *) echo 0 > "$STATE/.heartbeat-streak" ;;
   esac
+  trap '' HUP INT TERM
   [ -z "$FM_WAKE_POST_OUTPUT_ACTION" ] || trap '' PIPE
   if echo "$1"; then
     output_status=0
+    watch_delivery_publish "$1" || true
   else
     output_status=1
   fi

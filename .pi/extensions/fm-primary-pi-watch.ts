@@ -31,7 +31,7 @@ type ArmResult = {
 type LockOwnership = "owned" | "missing" | "other";
 
 type CloseClassification = {
-  kind: "actionable" | "failure";
+  kind: "actionable" | "benign" | "failure";
   message: string;
 };
 
@@ -158,14 +158,17 @@ function classifyClose(stdout: string, stderr: string, code: number | null, sign
   const combined = `${stdout}\n${stderr}`.trim();
   const reason = actionableLine(combined);
   if (reason) return { kind: "actionable", message: reason };
-  const healthy = combined.split(/\r?\n/).find((line) => /^watcher: healthy\b/.test(line));
+  const lines = combined.split(/\r?\n/);
+  const benignClose = lines.find((line) => /^watcher: cycle closed actionably\b/.test(line));
+  if (benignClose && code === 0 && !signal) return { kind: "benign", message: benignClose };
+  const healthy = lines.find((line) => /^watcher: healthy\b/.test(line));
   if (healthy) {
     return {
       kind: "failure",
       message: `watcher: FAILED - Pi extension arm child found an external healthy watcher instead of owning wake delivery\n${healthy}`,
     };
   }
-  const failed = combined.split(/\r?\n/).find((line) => /^watcher: FAILED/.test(line));
+  const failed = lines.find((line) => /^watcher: FAILED/.test(line));
   if (failed) return { kind: "failure", message: failed };
   if (signal) {
     return {
@@ -436,6 +439,7 @@ export default function (pi: ExtensionAPI) {
         return;
       }
       if (owner.restoring) return;
+      if (classification.kind === "benign") owner.retryFailures = 0;
       scheduleRetry(owner, classification.message, predecessor);
     });
     armChild.on("error", (error: Error) => {
