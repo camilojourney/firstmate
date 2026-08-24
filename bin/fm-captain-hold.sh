@@ -222,59 +222,114 @@ sha256_text() {  # <text>
   fi
 }
 
-canonical_report_digest() {  # <data-dir> <report-dir>
-  perl -MFcntl=:DEFAULT,:mode -MDigest::SHA -MFile::Spec -e '
+pin_report_for_attach() {  # <origin-id>
+  perl -MFcntl=:DEFAULT,:mode,F_SETFD -MFile::Spec -e '
     use strict;
     use warnings;
 
-    my ($data, $report_dir) = @ARGV;
+    my ($script, $origin, $data) = @ARGV;
     $data = File::Spec->rel2abs($data);
-    $report_dir = File::Spec->rel2abs($report_dir);
     my $nofollow = eval { Fcntl::O_NOFOLLOW() };
-    exit 1 if !defined $nofollow;
+    my $directory = eval { Fcntl::O_DIRECTORY() };
+    exit 1 if !defined($nofollow) || !defined($directory);
 
-    sub dir_identity {
-      my ($path) = @_;
-      my @st = lstat($path);
-      return if !@st || !S_ISDIR($st[2]) || S_ISLNK($st[2]);
-      return join(":", @st[0, 1, 2]);
-    }
-
-    sub file_identity {
-      my ($path) = @_;
-      my @st = lstat($path);
-      return if !@st || !S_ISREG($st[2]) || S_ISLNK($st[2]) || !$st[7];
+    sub identity {
+      my ($fh, $kind) = @_;
+      my @st = stat($fh);
+      return if !@st;
+      return if $kind eq "dir" && !S_ISDIR($st[2]);
+      return if $kind eq "file" && (!S_ISREG($st[2]) || !$st[7]);
       return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
     }
 
-    my $data_before = dir_identity($data);
-    my $dir_before = dir_identity($report_dir);
-    exit 1 if !defined($data_before) || !defined($dir_before);
-    chdir($report_dir) or exit 1;
+    sysopen(my $data_fh, $data, O_RDONLY | $nofollow | $directory) or exit 1;
+    chdir($data) or exit 1;
+    my $data_identity = identity($data_fh, "dir");
     my @cwd = stat(".");
-    exit 1 if !@cwd || join(":", @cwd[0, 1, 2]) ne $dir_before;
+    exit 1 if !defined($data_identity) || !@cwd
+      || join(":", @cwd[0, 1, 2, 3, 7, 9, 10]) ne $data_identity;
 
-    my $file_before = file_identity("report.md");
-    exit 1 if !defined $file_before;
-    sysopen(my $fh, "report.md", O_RDONLY | $nofollow) or exit 1;
-    binmode($fh);
-    my @opened = stat($fh);
-    exit 1 if !@opened || join(":", @opened[0, 1, 2, 3, 7, 9, 10]) ne $file_before;
-    my $digest = Digest::SHA->new(256)->addfile($fh)->hexdigest;
-    my @finished = stat($fh);
-    exit 1 if !@finished || join(":", @finished[0, 1, 2, 3, 7, 9, 10]) ne $file_before;
-    close($fh) or exit 1;
+    sysopen(my $dir_fh, $origin, O_RDONLY | $nofollow | $directory) or exit 1;
+    chdir($origin) or exit 1;
+    my $dir_identity = identity($dir_fh, "dir");
+    @cwd = stat(".");
+    exit 1 if !defined($dir_identity) || !@cwd
+      || join(":", @cwd[0, 1, 2, 3, 7, 9, 10]) ne $dir_identity;
 
-    my $data_after = dir_identity($data);
-    my $dir_after = dir_identity($report_dir);
-    my $file_after = file_identity("report.md");
-    my $canonical_after = file_identity("$report_dir/report.md");
-    exit 1 if !defined($data_after) || $data_after ne $data_before;
-    exit 1 if !defined($dir_after) || $dir_after ne $dir_before;
-    exit 1 if !defined($file_after) || $file_after ne $file_before;
-    exit 1 if !defined($canonical_after) || $canonical_after ne $file_before;
+    sysopen(my $report_fh, "report.md", O_RDONLY | $nofollow) or exit 1;
+    exit 1 if !defined identity($report_fh, "file");
+    for my $fh ($data_fh, $dir_fh, $report_fh) {
+      fcntl($fh, F_SETFD, 0) or exit 1;
+    }
+    $ENV{FM_ATTACH_PINNED_DATA_FD} = fileno($data_fh);
+    $ENV{FM_ATTACH_PINNED_DIR_FD} = fileno($dir_fh);
+    $ENV{FM_ATTACH_PINNED_REPORT_FD} = fileno($report_fh);
+    exec {$script} $script, "__attach-pinned", $origin;
+    exit 1;
+  ' "$SCRIPT_DIR/fm-captain-hold.sh" "$1" "$DATA"
+}
+
+pinned_report_guard() {  # <mode> <origin-id> [expected-digest] [staged-meta] [published-meta]
+  local mode=$1 origin=$2 expected=${3:-} staged=${4:-} published=${5:-}
+  case "${FM_ATTACH_PINNED_DATA_FD:-}:${FM_ATTACH_PINNED_DIR_FD:-}:${FM_ATTACH_PINNED_REPORT_FD:-}" in
+    *[!0-9:]*) return 1 ;;
+    :*|*::*|*:) return 1 ;;
+  esac
+  perl -MFcntl=:mode -MDigest::SHA -MFile::Spec -e '
+    use strict;
+    use warnings;
+
+    my ($mode, $origin, $expected, $staged, $published, $data, $data_fd, $dir_fd, $report_fd) = @ARGV;
+    $data = File::Spec->rel2abs($data);
+    my $report_dir = "$data/$origin";
+    my $report = "$report_dir/report.md";
+
+    sub fd_identity {
+      my ($fh, $kind) = @_;
+      my @st = stat($fh);
+      return if !@st;
+      return if $kind eq "dir" && !S_ISDIR($st[2]);
+      return if $kind eq "file" && (!S_ISREG($st[2]) || !$st[7]);
+      return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
+    }
+
+    sub path_identity {
+      my ($path, $kind) = @_;
+      my @st = lstat($path);
+      return if !@st || S_ISLNK($st[2]);
+      return if $kind eq "dir" && !S_ISDIR($st[2]);
+      return if $kind eq "file" && (!S_ISREG($st[2]) || !$st[7]);
+      return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
+    }
+
+    open(my $data_fh, "<&$data_fd") or exit 1;
+    open(my $dir_fh, "<&$dir_fd") or exit 1;
+    open(my $report_fh, "<&$report_fd") or exit 1;
+    binmode($report_fh);
+    my $data_identity = fd_identity($data_fh, "dir");
+    my $dir_identity = fd_identity($dir_fh, "dir");
+    my $report_identity = fd_identity($report_fh, "file");
+    exit 1 if !defined($data_identity) || !defined($dir_identity) || !defined($report_identity);
+    exit 1 if !defined(path_identity($data, "dir")) || path_identity($data, "dir") ne $data_identity;
+    exit 1 if !defined(path_identity($report_dir, "dir")) || path_identity($report_dir, "dir") ne $dir_identity;
+    exit 1 if !defined(path_identity($report, "file")) || path_identity($report, "file") ne $report_identity;
+    seek($report_fh, 0, 0) or exit 1;
+    my $digest = Digest::SHA->new(256)->addfile($report_fh)->hexdigest;
+    exit 1 if !defined(fd_identity($report_fh, "file")) || fd_identity($report_fh, "file") ne $report_identity;
+    exit 1 if !defined(path_identity($data, "dir")) || path_identity($data, "dir") ne $data_identity;
+    exit 1 if !defined(path_identity($report_dir, "dir")) || path_identity($report_dir, "dir") ne $dir_identity;
+    exit 1 if !defined(path_identity($report, "file")) || path_identity($report, "file") ne $report_identity;
+    exit 1 if length($expected) && $digest ne $expected;
+    if ($mode eq "publish") {
+      my $staged_identity = path_identity($staged, "file");
+      exit 1 if !defined($staged_identity) || -e $published || -l $published;
+      rename($staged, $published) or exit 1;
+    } elsif ($mode ne "digest" && $mode ne "check") {
+      exit 1;
+    }
     print "$digest\n";
-  ' "$1" "$2"
+  ' "$mode" "$origin" "$expected" "$staged" "$published" "$DATA" \
+    "$FM_ATTACH_PINNED_DATA_FD" "$FM_ATTACH_PINNED_DIR_FD" "$FM_ATTACH_PINNED_REPORT_FD"
 }
 
 # The legacy derived identity older installs minted for a captain call.
@@ -888,7 +943,7 @@ is_traversal_segment() {  # <value>
 }
 
 command_attach() {
-  local origin=${1:-} meta live_meta report report_dir report_digest existing_kind existing_digest tmp show repo
+  local origin=${1:-} report report_dir
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
   is_traversal_segment "$origin" && fail "origin-id must not be . or ..: $origin"
@@ -902,10 +957,22 @@ command_attach() {
   [ -f "$report" ] && [ ! -L "$report" ] \
     || fail "no self-contained report for $origin: $report"
   [ -s "$report" ] || fail "report for $origin is empty: $report"
+  pin_report_for_attach "$origin" \
+    || fail "report changed or became unsafe while attaching: $report"
+}
+
+command_attach_pinned() {
+  local origin=${1:-} meta live_meta report report_digest existing_kind existing_digest tmp show repo
+  [ "$#" -eq 1 ] || exit 2
+  validate_slug origin-id "$origin"
+  is_traversal_segment "$origin" && fail "origin-id must not be . or ..: $origin"
+  report="$DATA/$origin/report.md"
+  require_tasks_axi
+  [ -d "$STATE" ] && [ ! -L "$STATE" ] || fail "state directory is unsafe: $STATE"
   show=$(task_show "$origin") \
     || fail "no backlog task $origin in $FM_HOME/data/backlog.md; attach requires an authoritative local task identity, never fabricated authority"
   repo=$(show_field_value "$show" repo)
-  report_digest=$(canonical_report_digest "$DATA" "$report_dir") \
+  report_digest=$(pinned_report_guard digest "$origin") \
     || fail "report changed or became unsafe while attaching: $report"
 
   live_meta="$STATE/$origin.meta"
@@ -913,6 +980,8 @@ command_attach() {
   CAPTAIN_META_LOCK=$(fm_meta_lock_path "$live_meta") || fail "could not resolve origin metadata lock"
   fm_lock_acquire_wait "$CAPTAIN_META_LOCK"
   CAPTAIN_META_LOCK_HELD=1
+  pinned_report_guard check "$origin" "$report_digest" >/dev/null \
+    || fail "report changed or became unsafe while attaching: $report"
 
   if [ -e "$live_meta" ] || [ -L "$live_meta" ]; then
     [ -f "$live_meta" ] && [ ! -L "$live_meta" ] || fail "origin metadata is unsafe: $live_meta"
@@ -953,9 +1022,9 @@ command_attach() {
     rm -f -- "$tmp"
     fail "cannot stage origin metadata for $origin"
   fi
-  if ! mv -f -- "$tmp" "$meta"; then
+  if ! pinned_report_guard publish "$origin" "$report_digest" "$tmp" "$meta" >/dev/null; then
     rm -f -- "$tmp"
-    fail "could not publish origin metadata for $origin"
+    fail "report changed or became unsafe while publishing origin metadata for $origin"
   fi
   printf 'attached: %s\n' "$origin"
 }
@@ -1188,6 +1257,7 @@ case "${1:-}" in
   complete) shift; command_complete "$@" ;;
   verify) shift; command_verify "$@" ;;
   attach) shift; command_attach "$@" ;;
+  __attach-pinned) shift; command_attach_pinned "$@" ;;
   diverged) shift; command_diverged "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;

@@ -1427,6 +1427,79 @@ SH
   pass "attach rejects missing, empty, symlinked, swapped, malformed, no-backlog-task, and ordinary-metadata inputs without mutation"
 }
 
+test_attach_rejects_report_swap_during_metadata_lock_wait() {
+  local home id lock ready release wait_marker outside real_sleep holder_pid attach_pid rc i
+  home=$(make_home attach-lock-wait-swap)
+  id=sample-lock-wait-research
+  mkdir -p "$home/data/$id"
+  printf '# canonical report pinned before lock wait\n' > "$home/data/$id/report.md"
+  outside="$home/outside-lock-wait-report.md"
+  printf '# outside report reached during lock wait\n' > "$outside"
+  tasks_in "$home" add "$id" "Lock-wait report swap" --kind scout --repo sample --start >/dev/null
+
+  lock="$home/state/.meta-$id.lock"
+  ready="$home/lock-holder-ready"
+  release="$home/lock-holder-release"
+  wait_marker="$home/attach-entered-lock-wait"
+  real_sleep=$(command -v sleep)
+  FM_STATE_OVERRIDE="$home/state" bash -c '
+    . "$1"
+    fm_lock_acquire_wait "$2"
+    : > "$3"
+    while [ ! -e "$4" ]; do "$5" 0.01; done
+    fm_lock_release "$2"
+  ' _ "$ROOT/bin/fm-wake-lib.sh" "$lock" "$ready" "$release" "$real_sleep" &
+  holder_pid=$!
+  i=0
+  while [ ! -e "$ready" ] && [ "$i" -lt 200 ]; do
+    "$real_sleep" 0.01
+    i=$((i + 1))
+  done
+  if [ ! -e "$ready" ]; then
+    touch "$release"
+    wait "$holder_pid" 2>/dev/null || true
+    fail "could not establish the metadata-lock holder for the report-swap regression"
+  fi
+
+  cat > "$home/fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = 0.1 ] && [ -n "${ATTACH_LOCK_WAIT_MARKER:-}" ]; then
+  : > "$ATTACH_LOCK_WAIT_MARKER"
+fi
+exec "$REAL_SLEEP_BIN" "$@"
+SH
+  chmod +x "$home/fakebin/sleep"
+  ATTACH_LOCK_WAIT_MARKER="$wait_marker" REAL_SLEEP_BIN="$real_sleep" \
+    run_attach "$home" "$id" > "$home/lock-wait-swap.out" 2> "$home/lock-wait-swap.err" &
+  attach_pid=$!
+  i=0
+  while [ ! -e "$wait_marker" ] && kill -0 "$attach_pid" 2>/dev/null && [ "$i" -lt 200 ]; do
+    "$real_sleep" 0.01
+    i=$((i + 1))
+  done
+  if [ ! -e "$wait_marker" ]; then
+    touch "$release"
+    wait "$attach_pid" 2>/dev/null || true
+    wait "$holder_pid" 2>/dev/null || true
+    fail "attach did not reach the blocked metadata-lock wait"
+  fi
+
+  mv -- "$home/data/$id/report.md" "$home/data/$id/report.md.before-swap"
+  ln -s -- "$outside" "$home/data/$id/report.md"
+  touch "$release"
+  set +e
+  wait "$attach_pid"
+  rc=$?
+  set -e
+  wait "$holder_pid" || fail "metadata-lock holder failed during the report-swap regression"
+  [ "$rc" -ne 0 ] || fail "attach published after the canonical report became a symlink during its metadata-lock wait"
+  assert_grep "report changed or became unsafe" "$home/lock-wait-swap.err" \
+    "a report swapped during the metadata-lock wait must be refused by name"
+  assert_absent "$(attached_origin_meta "$home" "$id")" \
+    "a report swapped during the metadata-lock wait must not publish an association"
+  pass "attach keeps the canonical report pinned and rejects a swap during metadata-lock wait"
+}
+
 test_attach_scoped_to_active_home() {
   local home other id
   home=$(make_home attach-home-scope)
@@ -1589,6 +1662,7 @@ test_legitimate_holds_produce_no_divergence_signal
 test_attach_fixes_routed_research_completion_gap
 test_attach_idempotent_and_conflicting_reassociation
 test_attach_rejects_unsafe_and_missing_inputs
+test_attach_rejects_report_swap_during_metadata_lock_wait
 test_attach_scoped_to_active_home
 test_attach_preserves_unresolved_decision_gate
 test_attach_allows_concurrent_first_use_across_origins
