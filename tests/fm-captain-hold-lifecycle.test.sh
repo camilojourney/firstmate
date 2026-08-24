@@ -495,8 +495,9 @@ test_out_of_band_close_is_recordable() {
   pass "an out-of-band close is recordable with the captain's word and nothing else"
 }
 
-# A post-teardown visual review completes against the surviving report and
-# durable tasks, with no volatile task metadata and no second decision database.
+# A post-teardown visual review attaches the surviving report to its durable
+# task, then completes through the same owner with no volatile worker metadata
+# and no second decision database.
 test_visual_review_uses_shared_completion_owner() {
   local home id json
   home=$(make_home visual-review)
@@ -510,6 +511,8 @@ test_visual_review_uses_shared_completion_owner() {
     || fail "initial investigation could not pass the shared completion owner"
   run_teardown "$home" "$id" >/dev/null 2> "$home/visual-teardown.err" \
     || fail "completed investigation teardown failed: $(cat "$home/visual-teardown.err")"
+  run_attach "$home" "$id" >/dev/null \
+    || fail "post-teardown visual review could not attach the surviving report"
   tasks_in "$home" "done" "$id" --report "data/$id/report.md" --keep 0 >/dev/null
 
   mkdir -p "$home/.lavish"
@@ -1182,10 +1185,12 @@ EOF
 # data/<origin>/report.md straight from its own session, with no fm-spawn.sh
 # crewmate and so no state/<origin>.meta ever created. A backlog task minted
 # AFTER collection (the normal-looking next step) does not fix this, because
-# only fm-spawn.sh writes task metadata. complete --none then "succeeds" while
-# silently recording nothing (no meta to write into), and verify - the gate
-# scout teardown actually calls - refuses outright, leaving the investigation
-# falsely incomplete even though the report and a --none inventory both exist.
+# only fm-spawn.sh writes task metadata. The old complete --none path then
+# "succeeded" while silently recording nothing (no meta to write into), and
+# verify - the gate scout teardown actually calls - refused outright, leaving
+# the investigation falsely incomplete even though the report and a --none
+# inventory both existed. Completion now refuses retryably until attach has
+# published that authoritative metadata.
 # bin/fm-captain-hold.sh attach is the smallest fix: it gives that report a
 # durable origin identity without fabricating state/*.meta by hand, and
 # without touching the ordinary fm-spawn.sh-created scout path at all.
@@ -1240,16 +1245,22 @@ EOF
     || fail "could not add the post-collection backlog record"
   assert_absent "$home/state/$id.meta" "adding a backlog task must not fabricate metadata"
 
-  # 4: complete --none looks like it worked but records nothing durable, and
-  # verify - the real gate scout teardown calls - refuses.
-  run_captain "$home" complete "$id" --none >/dev/null \
-    || fail "complete --none itself failed instead of silently no-op'ing"
-  assert_absent "$home/state/$id.meta" "reproduction error: complete --none must not create metadata on its own"
+  # 4: complete --none refuses with a stable retry instruction and records
+  # nothing durable; verify likewise refuses before attachment.
+  set +e
+  run_captain "$home" complete "$id" --none > "$home/complete-before.out" 2> "$home/complete-before.err"
+  rc=$?
+  set -e
+  [ "$rc" -ne 0 ] || fail "complete --none silently succeeded before authoritative metadata existed"
+  assert_grep "publish or attach authoritative metadata, then retry complete" "$home/complete-before.err" \
+    "complete must identify the missing metadata as a retryable attachment ordering"
+  assert_absent "$home/state/$id.meta" "refused completion must not create ordinary metadata"
+  assert_absent "$(attached_origin_meta "$home" "$id")" "refused completion must not create research metadata"
   set +e
   run_captain "$home" verify "$id" > "$home/verify-before.out" 2> "$home/verify-before.err"
   rc=$?
   set -e
-  [ "$rc" -ne 0 ] || fail "reproduction error: verify must refuse before the origin is attached"
+  [ "$rc" -ne 0 ] || fail "verify must refuse before the origin is attached"
   assert_grep "origin metadata is absent" "$home/verify-before.err" \
     "verify's refusal must name the missing metadata, matching the real operator-visible failure"
 
@@ -1643,41 +1654,167 @@ SH
   pass "concurrent first attaches for different origins share directory initialization safely"
 }
 
-test_attach_serializes_concurrent_attempts() {
-  local home id meta pids i pid rc_any=0
-  home=$(make_home attach-concurrency)
-  id=sample-concurrent-research
+test_attach_serializes_complete_first_ordering() {
+  local home id meta complete_ready complete_release attach_wait real_sleep complete_pid attach_pid complete_rc attach_rc verify_rc i
+  home=$(make_home attach-complete-first)
+  id=sample-complete-first-research
+  tasks_in "$home" add "$id" "Complete-first research" --kind scout --repo sample --start >/dev/null
+  complete_ready="$home/complete-holds-metadata-lock"
+  complete_release="$home/release-complete"
+  attach_wait="$home/attach-waits-for-complete"
+  real_sleep=$(command -v sleep)
+
+  cat > "$home/fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = show ] && [ "${2:-}" = "${COMPLETE_FIRST_ID:-}" ] \
+  && [ -n "${COMPLETE_FIRST_READY:-}" ]; then
+  "$REAL_TASKS_AXI" "$@"
+  rc=$?
+  [ "$rc" -eq 0 ] || exit "$rc"
+  : > "$COMPLETE_FIRST_READY"
+  while [ ! -e "$COMPLETE_FIRST_RELEASE" ]; do
+    "$REAL_SLEEP_BIN" 0.01
+  done
+  exit 0
+fi
+exec "$REAL_TASKS_AXI" "$@"
+SH
+  chmod +x "$home/fakebin/tasks-axi"
+  COMPLETE_FIRST_ID="$id" COMPLETE_FIRST_READY="$complete_ready" \
+    COMPLETE_FIRST_RELEASE="$complete_release" REAL_SLEEP_BIN="$real_sleep" \
+    run_captain "$home" complete "$id" --none \
+      > "$home/complete-first.out" 2> "$home/complete-first.err" &
+  complete_pid=$!
+  i=0
+  while [ ! -e "$complete_ready" ] && kill -0 "$complete_pid" 2>/dev/null && [ "$i" -lt 200 ]; do
+    "$real_sleep" 0.01
+    i=$((i + 1))
+  done
+  if [ ! -e "$complete_ready" ]; then
+    touch "$complete_release"
+    wait "$complete_pid" 2>/dev/null || true
+    fail "complete did not acquire the metadata lock before attachment"
+  fi
+
   mkdir -p "$home/data/$id"
-  printf '# Sample concurrent research\n\nNothing open.\n' > "$home/data/$id/report.md"
-  tasks_in "$home" add "$id" "Sample concurrent research" --kind scout --repo sample --start >/dev/null
-
-  pids=()
-  for i in 1 2 3 4 5 6; do
-    run_attach "$home" "$id" > "$home/race-attach-$i.out" 2>&1 &
-    pids+=("$!")
-    run_captain "$home" complete "$id" --none > "$home/race-complete-$i.out" 2>&1 &
-    pids+=("$!")
+  printf '# Complete-first research\n\nNothing open.\n' > "$home/data/$id/report.md"
+  cat > "$home/fakebin/sleep" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = 0.1 ] && [ -n "${ATTACH_LOCK_WAIT_MARKER:-}" ]; then
+  : > "$ATTACH_LOCK_WAIT_MARKER"
+fi
+exec "$REAL_SLEEP_BIN" "$@"
+SH
+  chmod +x "$home/fakebin/sleep"
+  ATTACH_LOCK_WAIT_MARKER="$attach_wait" REAL_SLEEP_BIN="$real_sleep" \
+    run_attach "$home" "$id" > "$home/attach-after-complete.out" 2> "$home/attach-after-complete.err" &
+  attach_pid=$!
+  i=0
+  while [ ! -e "$attach_wait" ] && kill -0 "$attach_pid" 2>/dev/null && [ "$i" -lt 200 ]; do
+    "$real_sleep" 0.01
+    i=$((i + 1))
   done
-  for pid in "${pids[@]}"; do
-    wait "$pid" || rc_any=1
-  done
-  [ "$rc_any" -eq 0 ] \
-    || fail "a concurrent attach or complete attempt failed unexpectedly: $(tail -n +1 "$home"/race-*.out)"
+  if [ ! -e "$attach_wait" ]; then
+    touch "$complete_release"
+    wait "$complete_pid" 2>/dev/null || true
+    wait "$attach_pid" 2>/dev/null || true
+    fail "attach did not wait behind the complete-first metadata lock"
+  fi
 
+  touch "$complete_release"
+  set +e
+  wait "$complete_pid"
+  complete_rc=$?
+  wait "$attach_pid"
+  attach_rc=$?
+  set -e
+  [ "$complete_rc" -ne 0 ] || fail "complete-first ordering silently succeeded without origin metadata"
+  [ "$attach_rc" -eq 0 ] || fail "attach failed after complete's retryable refusal: $(cat "$home/attach-after-complete.err")"
+  assert_grep "publish or attach authoritative metadata, then retry complete" "$home/complete-first.err" \
+    "complete-first ordering must return the stable retry instruction"
   meta=$(attached_origin_meta "$home" "$id")
-  assert_absent "$home/state/$id.meta" "the concurrent race must not publish a live-worker metadata record"
-  assert_present "$meta" "the concurrent race must leave a published origin record"
-  [ "$(grep -c '^kind=' "$meta")" = 1 ] \
-    || fail "concurrent attach attempts left more than one kind= line: $(cat "$meta")"
-  assert_grep "kind=research" "$meta" "the race must not leave a corrupt or foreign metadata record"
-
-  # Whichever interleaving won, re-running the ordinary sequence to completion
-  # must converge cleanly - no half-published record survives the race.
+  assert_present "$meta" "attach did not publish after complete released the metadata lock"
+  assert_no_grep "decisions_reviewed=" "$meta" \
+    "the failed first completion must not appear attested after attachment"
+  set +e
+  run_captain "$home" verify "$id" > "$home/verify-before-retry.out" 2> "$home/verify-before-retry.err"
+  verify_rc=$?
+  set -e
+  [ "$verify_rc" -ne 0 ] || fail "verify accepted an attachment that the first completion did not attest"
   run_captain "$home" complete "$id" --none >/dev/null \
-    || fail "complete did not converge after the concurrent race"
+    || fail "complete retry failed after the complete-first ordering attached metadata"
   run_captain "$home" verify "$id" >/dev/null \
-    || fail "verify did not converge after the concurrent race"
-  pass "concurrent attach and completion attempts on one origin serialize without half-published metadata"
+    || fail "verify failed after the explicit complete retry"
+  pass "complete-first concurrency refuses without mutation and succeeds after retry"
+}
+
+test_attach_serializes_attach_first_ordering() {
+  local home id meta attach_ready attach_release real_sleep attach_pid complete_pid attach_rc complete_rc i
+  home=$(make_home attach-attach-first)
+  id=sample-attach-first-research
+  mkdir -p "$home/data/$id"
+  printf '# Attach-first research\n\nNothing open.\n' > "$home/data/$id/report.md"
+  tasks_in "$home" add "$id" "Attach-first research" --kind scout --repo sample --start >/dev/null
+  attach_ready="$home/attach-holds-metadata-lock"
+  attach_release="$home/release-attach"
+  real_sleep=$(command -v sleep)
+
+  cat > "$home/fakebin/mkdir" <<'SH'
+#!/usr/bin/env bash
+target=${!#}
+if [ "$target" = "${ATTACH_RESEARCH_STATE:-}" ]; then
+  : > "$ATTACH_FIRST_READY"
+  while [ ! -e "$ATTACH_FIRST_RELEASE" ]; do
+    "$REAL_SLEEP_BIN" 0.01
+  done
+fi
+command -p mkdir "$@"
+SH
+  chmod +x "$home/fakebin/mkdir"
+  ATTACH_RESEARCH_STATE="$home/state/captain-hold-origins" \
+    ATTACH_FIRST_READY="$attach_ready" ATTACH_FIRST_RELEASE="$attach_release" \
+    REAL_SLEEP_BIN="$real_sleep" \
+    run_attach "$home" "$id" > "$home/attach-first.out" 2> "$home/attach-first.err" &
+  attach_pid=$!
+  i=0
+  while [ ! -e "$attach_ready" ] && kill -0 "$attach_pid" 2>/dev/null && [ "$i" -lt 200 ]; do
+    "$real_sleep" 0.01
+    i=$((i + 1))
+  done
+  if [ ! -e "$attach_ready" ]; then
+    touch "$attach_release"
+    wait "$attach_pid" 2>/dev/null || true
+    fail "attach did not acquire the metadata lock before completion"
+  fi
+
+  run_captain "$home" complete "$id" --none \
+    > "$home/complete-after-attach.out" 2> "$home/complete-after-attach.err" &
+  complete_pid=$!
+  "$real_sleep" 0.2
+  if ! kill -0 "$complete_pid" 2>/dev/null; then
+    touch "$attach_release"
+    wait "$attach_pid" 2>/dev/null || true
+    wait "$complete_pid" 2>/dev/null || true
+    fail "complete bypassed the attach-first metadata lock"
+  fi
+
+  touch "$attach_release"
+  set +e
+  wait "$attach_pid"
+  attach_rc=$?
+  wait "$complete_pid"
+  complete_rc=$?
+  set -e
+  [ "$attach_rc" -eq 0 ] || fail "attach-first publication failed: $(cat "$home/attach-first.err")"
+  [ "$complete_rc" -eq 0 ] || fail "the first completion did not consume attach-first metadata: $(cat "$home/complete-after-attach.err")"
+  assert_grep "complete: $id captain-call inventory reviewed" "$home/complete-after-attach.out" \
+    "attach-first ordering must complete on its first attempt"
+  meta=$(attached_origin_meta "$home" "$id")
+  assert_grep "decisions_reviewed=1" "$meta" \
+    "the first completion did not persist its attach-first attestation"
+  run_captain "$home" verify "$id" >/dev/null \
+    || fail "verify failed after attach-first completion"
+  pass "attach-first concurrency publishes before the first completion attests"
 }
 
 test_uninventoried_report_decision_refuses_completion
@@ -1704,4 +1841,5 @@ test_attach_rejects_report_swap_during_metadata_lock_wait
 test_attach_scoped_to_active_home
 test_attach_preserves_unresolved_decision_gate
 test_attach_allows_concurrent_first_use_across_origins
-test_attach_serializes_concurrent_attempts
+test_attach_serializes_complete_first_ordering
+test_attach_serializes_attach_first_ordering
