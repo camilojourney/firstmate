@@ -129,8 +129,9 @@
 # `<origin-id>` to already name an authoritative task in this home's own backlog
 # (`tasks-axi show`), so attach can bind an existing report to existing authority
 # but never invent either. It refuses when ordinary `state/<origin-id>.meta`
-# exists, so a spawn's live scout, ship, or secondmate record is untouched. An
-# exact retry - same origin, byte-identical report - is an idempotent no-op; a
+# exists, so a spawn's live scout, ship, or secondmate record is untouched, and
+# a fresh spawn likewise refuses an attached research origin. An exact retry -
+# same origin, byte-identical report - is an idempotent no-op; a
 # different report under the same origin is refused as a conflicting
 # reassociation, and every check runs before the one atomic publish, so a
 # rejected input never partially writes the record. The attached record lives
@@ -221,14 +222,59 @@ sha256_text() {  # <text>
   fi
 }
 
-sha256_file() {  # <path>
-  if command -v shasum >/dev/null 2>&1; then
-    shasum -a 256 < "$1" | awk '{print $1}'
-  elif command -v sha256sum >/dev/null 2>&1; then
-    sha256sum < "$1" | awk '{print $1}'
-  else
-    fail "shasum or sha256sum is required"
-  fi
+canonical_report_digest() {  # <data-dir> <report-dir>
+  perl -MFcntl=:DEFAULT,:mode -MDigest::SHA -MFile::Spec -e '
+    use strict;
+    use warnings;
+
+    my ($data, $report_dir) = @ARGV;
+    $data = File::Spec->rel2abs($data);
+    $report_dir = File::Spec->rel2abs($report_dir);
+    my $nofollow = eval { Fcntl::O_NOFOLLOW() };
+    exit 1 if !defined $nofollow;
+
+    sub dir_identity {
+      my ($path) = @_;
+      my @st = lstat($path);
+      return if !@st || !S_ISDIR($st[2]) || S_ISLNK($st[2]);
+      return join(":", @st[0, 1, 2]);
+    }
+
+    sub file_identity {
+      my ($path) = @_;
+      my @st = lstat($path);
+      return if !@st || !S_ISREG($st[2]) || S_ISLNK($st[2]) || !$st[7];
+      return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
+    }
+
+    my $data_before = dir_identity($data);
+    my $dir_before = dir_identity($report_dir);
+    exit 1 if !defined($data_before) || !defined($dir_before);
+    chdir($report_dir) or exit 1;
+    my @cwd = stat(".");
+    exit 1 if !@cwd || join(":", @cwd[0, 1, 2]) ne $dir_before;
+
+    my $file_before = file_identity("report.md");
+    exit 1 if !defined $file_before;
+    sysopen(my $fh, "report.md", O_RDONLY | $nofollow) or exit 1;
+    binmode($fh);
+    my @opened = stat($fh);
+    exit 1 if !@opened || join(":", @opened[0, 1, 2, 3, 7, 9, 10]) ne $file_before;
+    my $digest = Digest::SHA->new(256)->addfile($fh)->hexdigest;
+    my @finished = stat($fh);
+    exit 1 if !@finished || join(":", @finished[0, 1, 2, 3, 7, 9, 10]) ne $file_before;
+    close($fh) or exit 1;
+
+    my $data_after = dir_identity($data);
+    my $dir_after = dir_identity($report_dir);
+    my $file_after = file_identity("report.md");
+    my $canonical_after = file_identity("$report_dir/report.md");
+    exit 1 if !defined($data_after) || $data_after ne $data_before;
+    exit 1 if !defined($dir_after) || $dir_after ne $dir_before;
+    exit 1 if !defined($file_after) || $file_after ne $file_before;
+    exit 1 if !defined($canonical_after) || $canonical_after ne $file_before;
+    print "$digest\n";
+  ' "$1" "$2"
 }
 
 # The legacy derived identity older installs minted for a captain call.
@@ -332,7 +378,7 @@ origin_open_decisions() {  # <origin-id>
   [ -f "$meta" ] || { printf '%s' "$open"; return 0; }
   kind=$(meta_value "$meta" kind)
   [ -n "$kind" ] || kind=ship
-  if [ "$kind" != secondmate ]; then
+  if [ "$kind" != secondmate ] && [ "$kind" != research ]; then
     last=$(last_status_line "$status_file")
     verb=$(status_line_verb "$last")
     case "$verb" in
@@ -859,7 +905,8 @@ command_attach() {
   show=$(task_show "$origin") \
     || fail "no backlog task $origin in $FM_HOME/data/backlog.md; attach requires an authoritative local task identity, never fabricated authority"
   repo=$(show_field_value "$show" repo)
-  report_digest=$(sha256_file "$report")
+  report_digest=$(canonical_report_digest "$DATA" "$report_dir") \
+    || fail "report changed or became unsafe while attaching: $report"
 
   live_meta="$STATE/$origin.meta"
   meta=$(research_meta_path "$origin")

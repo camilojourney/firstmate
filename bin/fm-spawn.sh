@@ -142,25 +142,26 @@
 #   focus-sensitive presentation mutation.
 #   Every single-task invocation holds one task-id-scoped lock across backend
 #   creation through metadata publication, so concurrent same-id spawns serialize
-#   even when they select different backends. A fresh spawn first takes the
-#   per-home task-set lock and refuses rather than waits when forced teardown owns
-#   it; relaunch is exempt because the existing task's control lock covers it.
-#   A fresh Treehouse-backed spawn also takes the project-identity lock in the local
-#   root Firstmate home's state directory before slot allocation and holds it through
-#   task metadata publication. Teardown holds that same lock while proving and
-#   returning a slot, so allocation cannot reuse a slot before its owner record
-#   is published. Under that same lock it writes the slot's owner claim, which is
-#   what lets teardown leave a slot reassigned since untouched; bin/fm-wake-lib.sh
-#   owns the claim and bin/fm-teardown.sh owns what it protects. A slot that
-#   cannot be claimed refuses the spawn rather than launching a worker whose slot
-#   could later be released out from under its successor. A spawn that aborts
-#   while it still holds the allocation lock drops its own claim; an abort after
-#   metadata publication has released that lock leaves the claim in place, and
-#   the next spawn's claim replaces it.
-#   The local root is whatever bin/fm-wake-lib.sh's
+#   even when they select different backends. A fresh spawn also holds the shared
+#   metadata lock and refuses an existing captain-hold research attachment for
+#   the same id. A fresh spawn first takes the per-home task-set lock and refuses
+#   rather than waits when forced teardown owns it; relaunch is exempt because
+#   the existing task's control lock covers it. A fresh Treehouse-backed spawn
+#   also takes the project-identity lock in the local root Firstmate home's state
+#   directory before slot allocation and holds it through task metadata
+#   publication. Teardown holds that same lock while proving and returning a
+#   slot, so allocation cannot reuse a slot before its owner record is published.
+#   Under that same lock it writes the slot's owner claim, which is what lets
+#   teardown leave a slot reassigned since untouched; bin/fm-wake-lib.sh owns the
+#   claim and bin/fm-teardown.sh owns what it protects. A slot that cannot be
+#   claimed refuses the spawn rather than launching a worker whose slot could
+#   later be released out from under its successor. A spawn that aborts while it
+#   still holds the allocation lock drops its own claim; an abort after metadata
+#   publication has released that lock leaves the claim in place, and the next
+#   spawn's claim replaces it. The local root is whatever bin/fm-wake-lib.sh's
 #   fm_firstmate_root_home resolves, so a home seeded from another machine anchors
-#   that lock itself rather than failing to resolve one;
-#   contention refuses rather than waits.
+#   that lock itself rather than failing to resolve one; contention refuses rather
+#   than waits.
 #   With no harness arg, a crewmate/scout spawn resolves the CREW harness only when
 #   config/crew-dispatch.json is absent. When that file exists, crewmate/scout
 #   spawns require an explicit harness so firstmate cannot silently skip dispatch
@@ -1613,6 +1614,20 @@ if [ "$RELAUNCH" -eq 0 ]; then
   SPAWN_TASK_SET_LOCK_HELD=1
   spawn_refuse_if_away_spend_cap
   spawn_require_relocated_queued_work
+fi
+if [ "$RELAUNCH" -eq 0 ]; then
+  SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
+  fm_lock_acquire_wait "$SPAWN_META_LOCK"
+  SPAWN_META_LOCK_HELD=1
+  SPAWN_RESEARCH_META="$STATE/captain-hold-origins/$ID.meta"
+  if [ -e "$SPAWN_RESEARCH_META" ] || [ -L "$SPAWN_RESEARCH_META" ]; then
+    if [ ! -f "$SPAWN_RESEARCH_META" ] || [ -L "$SPAWN_RESEARCH_META" ]; then
+      echo "error: attached research metadata for $ID is unsafe; refusing to publish ordinary spawn metadata" >&2
+    else
+      echo "error: task $ID is already an attached research origin; refusing to replace it with an ordinary spawn record" >&2
+    fi
+    exit 1
+  fi
 fi
 if [ "$KIND" = secondmate ]; then
   if spawn_remote_secondmate "$ID"; then
@@ -4888,9 +4903,14 @@ fi
 # still being delivered, cannot observe or complete a fresh provisional record
 # between its state check and `tasks-axi start`, and a delivery failure cannot
 # follow a committed In-flight transition.
+if [ "$SPAWN_META_LOCK_HELD" = 1 ]; then
+  fm_lock_release "$SPAWN_META_LOCK"
+  SPAWN_META_LOCK_HELD=0
+fi
 if [ "$SPAWN_TREEHOUSE_PROJECT_LOCK_HELD" = 1 ]; then
   SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=0
   fm_lock_release "$SPAWN_TREEHOUSE_PROJECT_LOCK"
+fi
 fi
 if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   # The record is published, so this task is now part of the set a teardown

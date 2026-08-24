@@ -1260,6 +1260,19 @@ EOF
   run_captain "$home" verify "$id" >/dev/null \
     || fail "verify still refuses a properly attached, reviewed origin"
 
+  if FM_SPAWN_NO_GUARD=1 PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_PROJECTS_OVERRIDE="$home/projects" \
+    "$ROOT/bin/fm-spawn.sh" "$id" "$home/projects/sample" --scout \
+      --harness codex --backend tmux > "$home/spawn-after-attach.out" 2> "$home/spawn-after-attach.err"; then
+    fail "a fresh ordinary spawn shadowed an attached research origin"
+  fi
+  assert_grep "already an attached research origin" "$home/spawn-after-attach.err" \
+    "fresh spawn must refuse the attached origin at metadata publication"
+  assert_absent "$home/state/$id.meta" "a refused fresh spawn must not shadow attached research metadata"
+  run_captain "$home" verify "$id" >/dev/null \
+    || fail "a refused fresh spawn disturbed the completed research attestation"
+
   # Compare against the proven ordinary scout lifecycle, in the same home: an
   # fm-spawn.sh-created live scout is untouched by attach existing at all.
   scout_id=sample-ordinary-scout-review
@@ -1382,7 +1395,36 @@ test_attach_rejects_unsafe_and_missing_inputs() {
   assert_grep "already has an ordinary kind=scout metadata record" "$home/livekind.err" \
     "an existing ordinary metadata record must be preserved and named in the refusal"
   assert_grep "kind=scout" "$home/state/$id.meta" "the ordinary spawn's metadata record must survive unchanged"
-  pass "attach rejects missing, empty, symlinked, malformed, no-backlog-task, and ordinary-metadata inputs without mutation"
+
+  id=sample-report-swap-race
+  mkdir -p "$home/data/$id"
+  printf '# canonical report before swap\n' > "$home/data/$id/report.md"
+  printf '# outside report reached through swap\n' > "$home/swapped-report.md"
+  tasks_in "$home" add "$id" "Report swap race" --kind scout --repo sample --start >/dev/null
+  cat > "$home/fakebin/tasks-axi" <<'SH'
+#!/usr/bin/env bash
+if [ "${1:-}" = show ] && [ "${2:-}" = "${ATTACH_SWAP_ID:-}" ]; then
+  "$REAL_TASKS_AXI" "$@"
+  rc=$?
+  if [ "$rc" -eq 0 ]; then
+    mv -- "$ATTACH_SWAP_REPORT" "$ATTACH_SWAP_REPORT.before-swap"
+    ln -s -- "$ATTACH_SWAP_TARGET" "$ATTACH_SWAP_REPORT"
+  fi
+  exit "$rc"
+fi
+exec "$REAL_TASKS_AXI" "$@"
+SH
+  chmod +x "$home/fakebin/tasks-axi"
+  if ATTACH_SWAP_ID="$id" ATTACH_SWAP_REPORT="$home/data/$id/report.md" \
+    ATTACH_SWAP_TARGET="$home/swapped-report.md" run_attach "$home" "$id" \
+      > "$home/swap-race.out" 2> "$home/swap-race.err"; then
+    fail "attach followed a report changed to a symlink after path validation"
+  fi
+  assert_grep "report changed or became unsafe" "$home/swap-race.err" \
+    "a report symlink swap must be refused through the public attach command"
+  assert_absent "$(attached_origin_meta "$home" "$id")" \
+    "a report symlink swap must not publish an association"
+  pass "attach rejects missing, empty, symlinked, swapped, malformed, no-backlog-task, and ordinary-metadata inputs without mutation"
 }
 
 test_attach_scoped_to_active_home() {
@@ -1417,6 +1459,7 @@ EOF
   tasks_in "$home" add "$id" "Sample open-question research" --kind scout --repo sample --start >/dev/null
   cat > "$home/state/$id.status" <<'EOF'
 needs-decision [key=sample-pick]: choose option A or option B
+done: routed research report delivered
 EOF
   run_attach "$home" "$id" >/dev/null || fail "attach itself must not require the decision to be resolved yet"
 
