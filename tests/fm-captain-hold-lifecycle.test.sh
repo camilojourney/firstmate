@@ -1200,8 +1200,27 @@ attached_origin_meta() {  # <home> <origin-id>
   printf '%s/state/captain-hold-origins/%s.meta\n' "$1" "$2"
 }
 
+prepare_spawn_fakebin() {  # <home>
+  local home=$1 fakebin="$1/fakebin"
+  cat > "$fakebin/tmux" <<'SH'
+#!/usr/bin/env bash
+set -u
+case "$*" in
+  *"#{pane_current_path}"*) printf '%s\n' "${FM_FAKE_PANE_PATH:-}"; exit 0 ;;
+esac
+case "${1:-}" in
+  display-message) printf 'firstmate\n'; exit 0 ;;
+  list-windows|has-session|set-window-option|kill-window|send-keys) exit 0 ;;
+  new-window) printf '%%1\n'; exit 0 ;;
+esac
+exit 0
+SH
+  chmod +x "$fakebin/tmux"
+  fm_fake_exit0 "$fakebin" codex
+}
+
 test_attach_fixes_routed_research_completion_gap() {
-  local home id scout_id rc meta fleet supervision
+  local home id scout_id rc meta fleet supervision scout_project scout_worktree
   home=$(make_home routed-research-attach)
 
   # 1-2: the secondmate's routed research leaves a self-contained report with
@@ -1276,18 +1295,37 @@ EOF
   # Compare against the proven ordinary scout lifecycle, in the same home: an
   # fm-spawn.sh-created live scout is untouched by attach existing at all.
   scout_id=sample-ordinary-scout-review
+  scout_project="$home/projects/sample-source"
+  scout_worktree="$home/projects/sample-scout-worktree"
   mkdir -p "$home/data/$scout_id"
   tasks_in "$home" add "$scout_id" "Ordinary spawned scout review" --kind scout --repo sample --start >/dev/null \
     || fail "could not create the ordinary scout fixture"
-  write_origin_meta "$home" "$scout_id"
+  printf 'brief for %s\n' "$scout_id" > "$home/data/$scout_id/brief.md"
+  fm_git_worktree "$scout_project" "$scout_worktree" "scout-$scout_id"
+  prepare_spawn_fakebin "$home"
+  FM_SPAWN_NO_GUARD=1 PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" \
+    FM_HOME="$home" FM_STATE_OVERRIDE="$home/state" FM_DATA_OVERRIDE="$home/data" \
+    FM_CONFIG_OVERRIDE="$home/config" FM_PROJECTS_OVERRIDE="$home/projects" \
+    FM_FAKE_PANE_PATH="$scout_worktree" TMUX="fake,1,0" \
+    "$ROOT/bin/fm-spawn.sh" "$scout_id" "$scout_project" --scout \
+      --harness codex --backend tmux > "$home/scout-spawn.out" 2> "$home/scout-spawn.err" \
+    || fail "the ordinary scout could not spawn: $(cat "$home/scout-spawn.err")"
+  assert_grep "spawned $scout_id" "$home/scout-spawn.out" \
+    "the ordinary scout fixture did not use the public spawn path"
+  assert_grep "kind=scout" "$home/state/$scout_id.meta" \
+    "the ordinary spawn did not publish scout metadata"
+  assert_absent "$(attached_origin_meta "$home" "$scout_id")" \
+    "the ordinary spawn must not publish a research origin record"
   printf 'done: report complete\n' > "$home/state/$scout_id.status"
   printf '# Ordinary scout review\n\nNo captain choice remains.\n' > "$home/data/$scout_id/report.md"
-  run_captain "$home" complete "$scout_id" --none >/dev/null \
+  run_shim "$home" complete "$scout_id" --none >/dev/null \
     || fail "the ordinary spawned-scout completion path regressed"
-  run_captain "$home" verify "$scout_id" >/dev/null \
+  run_shim "$home" verify "$scout_id" >/dev/null \
     || fail "the ordinary spawned-scout verify path regressed"
   run_teardown "$home" "$scout_id" >/dev/null 2> "$home/scout-teardown.err" \
     || fail "the ordinary spawned-scout teardown path regressed: $(cat "$home/scout-teardown.err")"
+  assert_absent "$home/state/$scout_id.meta" \
+    "the ordinary spawned-scout teardown did not clean up metadata"
   pass "attach reproduces and fixes the routed-research completion gap without disturbing the spawned-scout path"
 }
 
