@@ -1550,22 +1550,63 @@ SH
 }
 
 test_attach_scoped_to_active_home() {
-  local home other id
+  local home other id meta digest_before digest_after hold_id
   home=$(make_home attach-home-scope)
   other=$(make_home attach-home-scope-other)
   id=sample-cross-home-research
 
   mkdir -p "$other/data/$id"
   printf '# report that only exists in the other home\n' > "$other/data/$id/report.md"
-  tasks_in "$other" add "$id" "Cross-home research" --kind scout --repo sample --start >/dev/null
+  tasks_in "$other" add "$id" "Cross-home research" --kind scout --repo other-sample --start >/dev/null
   run_attach "$other" "$id" >/dev/null || fail "setup error: attach failed in the origin's own home"
-  assert_present "$(attached_origin_meta "$other" "$id")" "setup error: the other home must carry the real attach record"
+  meta=$(attached_origin_meta "$other" "$id")
+  assert_present "$meta" "setup error: the other home must carry the real attach record"
 
   if run_attach "$home" "$id" > "$home/cross-home.out" 2> "$home/cross-home.err"; then
     fail "attach in one home succeeded using another home's report and backlog task"
   fi
   assert_absent "$(attached_origin_meta "$home" "$id")" "attach must never publish metadata into a home that owns neither the report nor the task"
-  pass "attach refuses an origin whose report and backlog task belong to a different home"
+
+  mkdir -p "$home/data/$id"
+  cp "$other/data/$id/report.md" "$home/data/$id/report.md"
+  tasks_in "$home" add "$id" "Local cross-home research" --kind scout --repo local-sample --start >/dev/null
+  ln -s "$other/state/captain-hold-origins" "$home/state/captain-hold-origins"
+  digest_before=$(shasum -a 256 "$meta" | awk '{print $1}')
+
+  if run_attach "$home" "$id" > "$home/symlinked-state-attach.out" 2> "$home/symlinked-state-attach.err"; then
+    fail "an exact attach retry trusted another home's research namespace through a symlink"
+  fi
+  assert_grep "attached origin directory is unsafe" "$home/symlinked-state-attach.err" \
+    "attach must reject a symlinked research namespace before its exact-retry path"
+
+  hold_id=sample-cross-home-call
+  if run_captain "$home" hold "$hold_id" --title "Cross-home call" \
+    --reason "captain review pending" --origin "$id" \
+      > "$home/symlinked-state-hold.out" 2> "$home/symlinked-state-hold.err"; then
+    fail "hold read another home's attached origin through a symlink"
+  fi
+  assert_grep "attached origin directory is unsafe" "$home/symlinked-state-hold.err" \
+    "hold must reject a symlinked research namespace before reading project defaults"
+  if tasks_in "$home" show "$hold_id" --full >/dev/null 2>&1; then
+    fail "refused cross-home hold created a local task"
+  fi
+
+  if run_captain "$home" verify "$id" > "$home/symlinked-state-verify.out" 2> "$home/symlinked-state-verify.err"; then
+    fail "verify trusted another home's attached origin through a symlink"
+  fi
+  assert_grep "attached origin directory is unsafe" "$home/symlinked-state-verify.err" \
+    "verify must reject a symlinked research namespace before reading its attestation"
+
+  if run_captain "$home" complete "$id" --none \
+    > "$home/symlinked-state-complete.out" 2> "$home/symlinked-state-complete.err"; then
+    fail "complete attested another home's attached origin through a symlink"
+  fi
+  assert_grep "attached origin directory is unsafe" "$home/symlinked-state-complete.err" \
+    "complete must reject a symlinked research namespace before mutation"
+  digest_after=$(shasum -a 256 "$meta" | awk '{print $1}')
+  [ "$digest_before" = "$digest_after" ] \
+    || fail "cross-home attach, hold, verify, or complete mutated the other home's metadata"
+  pass "attach, hold, complete, and verify reject cross-home research namespace symlinks"
 }
 
 test_attach_preserves_unresolved_decision_gate() {
@@ -1602,7 +1643,7 @@ EOF
 }
 
 test_attach_allows_concurrent_first_use_across_origins() {
-  local home first second id barrier mkdir_bin pids pid rc_any=0
+  local home first second id barrier real_perl pids pid rc_any=0
   home=$(make_home attach-concurrent-first-use)
   first=sample-concurrent-first-research
   second=sample-concurrent-second-research
@@ -1612,33 +1653,34 @@ test_attach_allows_concurrent_first_use_across_origins() {
     tasks_in "$home" add "$id" "Concurrent first-use research" --kind scout --repo sample --start >/dev/null
   done
 
-  barrier="$home/attach-mkdir-barrier"
+  barrier="$home/attach-publish-barrier"
   mkdir -p "$barrier"
-  mkdir_bin=$(command -v mkdir)
-  cat > "$home/fakebin/mkdir" <<'SH'
+  real_perl=$(command -v perl)
+  printf '%s\n' "$real_perl" > "$home/fakebin/real-perl"
+  cat > "$home/fakebin/perl" <<'SH'
 #!/usr/bin/env bash
-args=("$@")
-target=${!#}
-if [ "$target" = "${ATTACH_RESEARCH_STATE:-}" ]; then
-  : > "$ATTACH_MKDIR_BARRIER/${BASHPID:-$$}"
-  while :; do
-    count=0
-    for marker in "$ATTACH_MKDIR_BARRIER"/*; do
-      [ -e "$marker" ] || continue
-      count=$((count + 1))
+for arg in "$@"; do
+  if [ "$arg" = publish ] && [ -n "${ATTACH_PUBLISH_BARRIER:-}" ]; then
+    : > "$ATTACH_PUBLISH_BARRIER/${BASHPID:-$$}"
+    while :; do
+      count=0
+      for marker in "$ATTACH_PUBLISH_BARRIER"/*; do
+        [ -e "$marker" ] || continue
+        count=$((count + 1))
+      done
+      [ "$count" -ge "$ATTACH_PUBLISH_COUNT" ] && break
+      sleep 0.01
     done
-    [ "$count" -ge "$ATTACH_MKDIR_COUNT" ] && break
-    sleep 0.01
-  done
-fi
-exec "$REAL_MKDIR_BIN" "${args[@]}"
+    break
+  fi
+done
+exec "$(cat "$(dirname "$0")/real-perl")" "$@"
 SH
-  chmod +x "$home/fakebin/mkdir"
+  chmod +x "$home/fakebin/perl"
 
   pids=()
   for id in "$first" "$second"; do
-    ATTACH_RESEARCH_STATE="$home/state/captain-hold-origins" \
-      ATTACH_MKDIR_BARRIER="$barrier" ATTACH_MKDIR_COUNT=2 REAL_MKDIR_BIN="$mkdir_bin" \
+    ATTACH_PUBLISH_BARRIER="$barrier" ATTACH_PUBLISH_COUNT=2 REAL_PERL_BIN="$real_perl" \
       run_attach "$home" "$id" > "$home/$id.out" 2>&1 &
     pids+=("$!")
   done
@@ -1749,7 +1791,7 @@ SH
 }
 
 test_attach_serializes_attach_first_ordering() {
-  local home id meta attach_ready attach_release real_sleep attach_pid complete_pid attach_rc complete_rc i
+  local home id meta attach_ready attach_release real_sleep real_perl attach_pid complete_pid attach_rc complete_rc i
   home=$(make_home attach-attach-first)
   id=sample-attach-first-research
   mkdir -p "$home/data/$id"
@@ -1758,22 +1800,25 @@ test_attach_serializes_attach_first_ordering() {
   attach_ready="$home/attach-holds-metadata-lock"
   attach_release="$home/release-attach"
   real_sleep=$(command -v sleep)
+  real_perl=$(command -v perl)
+  printf '%s\n' "$real_perl" > "$home/fakebin/real-perl"
 
-  cat > "$home/fakebin/mkdir" <<'SH'
+  cat > "$home/fakebin/perl" <<'SH'
 #!/usr/bin/env bash
-target=${!#}
-if [ "$target" = "${ATTACH_RESEARCH_STATE:-}" ]; then
-  : > "$ATTACH_FIRST_READY"
-  while [ ! -e "$ATTACH_FIRST_RELEASE" ]; do
-    "$REAL_SLEEP_BIN" 0.01
-  done
-fi
-command -p mkdir "$@"
+for arg in "$@"; do
+  if [ "$arg" = check ] && [ -n "${ATTACH_FIRST_READY:-}" ]; then
+    : > "$ATTACH_FIRST_READY"
+    while [ ! -e "$ATTACH_FIRST_RELEASE" ]; do
+      "$REAL_SLEEP_BIN" 0.01
+    done
+    break
+  fi
+done
+exec "$(cat "$(dirname "$0")/real-perl")" "$@"
 SH
-  chmod +x "$home/fakebin/mkdir"
-  ATTACH_RESEARCH_STATE="$home/state/captain-hold-origins" \
-    ATTACH_FIRST_READY="$attach_ready" ATTACH_FIRST_RELEASE="$attach_release" \
-    REAL_SLEEP_BIN="$real_sleep" \
+  chmod +x "$home/fakebin/perl"
+  ATTACH_FIRST_READY="$attach_ready" ATTACH_FIRST_RELEASE="$attach_release" \
+    REAL_SLEEP_BIN="$real_sleep" REAL_PERL_BIN="$real_perl" \
     run_attach "$home" "$id" > "$home/attach-first.out" 2> "$home/attach-first.err" &
   attach_pid=$!
   i=0
@@ -1787,7 +1832,7 @@ SH
     fail "attach did not acquire the metadata lock before completion"
   fi
 
-  run_captain "$home" complete "$id" --none \
+  REAL_PERL_BIN="$real_perl" run_captain "$home" complete "$id" --none \
     > "$home/complete-after-attach.out" 2> "$home/complete-after-attach.err" &
   complete_pid=$!
   "$real_sleep" 0.2

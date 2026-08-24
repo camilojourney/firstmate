@@ -271,20 +271,22 @@ pin_report_for_attach() {  # <origin-id>
   ' "$SCRIPT_DIR/fm-captain-hold.sh" "$1" "$DATA"
 }
 
-pinned_report_guard() {  # <mode> <origin-id> [expected-digest] [staged-meta] [published-meta]
-  local mode=$1 origin=$2 expected=${3:-} staged=${4:-} published=${5:-}
+pinned_report_guard() {  # <mode> <origin-id> [expected-digest] [repo]
+  local mode=$1 origin=$2 expected=${3:-} repo=${4:-}
   case "${FM_ATTACH_PINNED_DATA_FD:-}:${FM_ATTACH_PINNED_DIR_FD:-}:${FM_ATTACH_PINNED_REPORT_FD:-}" in
     *[!0-9:]*) return 1 ;;
     :*|*::*|*:) return 1 ;;
   esac
-  perl -MFcntl=:mode -MDigest::SHA -MFile::Spec -e '
+  perl -MFcntl=:DEFAULT,:mode -MDigest::SHA -MFile::Spec -MFile::Temp=tempfile -e '
     use strict;
     use warnings;
 
-    my ($mode, $origin, $expected, $staged, $published, $data, $data_fd, $dir_fd, $report_fd) = @ARGV;
+    my ($mode, $origin, $expected, $repo, $data, $state, $data_fd, $dir_fd, $report_fd) = @ARGV;
     $data = File::Spec->rel2abs($data);
+    $state = File::Spec->rel2abs($state);
     my $report_dir = "$data/$origin";
     my $report = "$report_dir/report.md";
+    my $research_state = "$state/captain-hold-origins";
 
     sub fd_identity {
       my ($fh, $kind) = @_;
@@ -292,6 +294,7 @@ pinned_report_guard() {  # <mode> <origin-id> [expected-digest] [staged-meta] [p
       return if !@st;
       return if $kind eq "dir" && !S_ISDIR($st[2]);
       return if $kind eq "file" && (!S_ISREG($st[2]) || !$st[7]);
+      return join(":", @st[0, 1, 2]) if $kind eq "dir";
       return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
     }
 
@@ -301,6 +304,7 @@ pinned_report_guard() {  # <mode> <origin-id> [expected-digest] [staged-meta] [p
       return if !@st || S_ISLNK($st[2]);
       return if $kind eq "dir" && !S_ISDIR($st[2]);
       return if $kind eq "file" && (!S_ISREG($st[2]) || !$st[7]);
+      return join(":", @st[0, 1, 2]) if $kind eq "dir";
       return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
     }
 
@@ -323,14 +327,46 @@ pinned_report_guard() {  # <mode> <origin-id> [expected-digest] [staged-meta] [p
     exit 1 if !defined(path_identity($report, "file")) || path_identity($report, "file") ne $report_identity;
     exit 1 if length($expected) && $digest ne $expected;
     if ($mode eq "publish") {
-      my $staged_identity = path_identity($staged, "file");
-      exit 1 if !defined($staged_identity) || -e $published || -l $published;
-      rename($staged, $published) or exit 1;
+      my $nofollow = eval { Fcntl::O_NOFOLLOW() };
+      my $directory = eval { Fcntl::O_DIRECTORY() };
+      exit 1 if !defined($nofollow) || !defined($directory);
+      sysopen(my $state_fh, $state, O_RDONLY | $nofollow | $directory) or exit 1;
+      my $state_identity = fd_identity($state_fh, "dir");
+      exit 1 if !defined($state_identity) || !defined(path_identity($state, "dir"))
+        || path_identity($state, "dir") ne $state_identity;
+      chdir($state_fh) or exit 1;
+      my @namespace = lstat("captain-hold-origins");
+      if (!@namespace) {
+        mkdir("captain-hold-origins", 0700) or do {
+          @namespace = lstat("captain-hold-origins");
+          exit 1 if !@namespace;
+        };
+      }
+      sysopen(my $research_fh, "captain-hold-origins", O_RDONLY | $nofollow | $directory) or exit 1;
+      my $research_identity = fd_identity($research_fh, "dir");
+      exit 1 if !defined($research_identity) || !defined(path_identity($research_state, "dir"))
+        || path_identity($research_state, "dir") ne $research_identity;
+      chdir($research_fh) or exit 1;
+      my @published = lstat("$origin.meta");
+      exit 1 if @published;
+      my ($tmp_fh, $tmp_name) = tempfile(".$origin.meta.attach.XXXXXX", DIR => ".", UNLINK => 1);
+      binmode($tmp_fh);
+      print {$tmp_fh} "kind=research\nreport=data/$origin/report.md\nreport_digest=$digest\n" or exit 1;
+      print {$tmp_fh} "project=$repo\n" or exit 1 if length($repo);
+      close($tmp_fh) or exit 1;
+      exit 1 if !defined(path_identity($state, "dir")) || path_identity($state, "dir") ne $state_identity;
+      exit 1 if !defined(path_identity($research_state, "dir"))
+        || path_identity($research_state, "dir") ne $research_identity;
+      exit 1 if !defined(path_identity($data, "dir")) || path_identity($data, "dir") ne $data_identity;
+      exit 1 if !defined(path_identity($report_dir, "dir")) || path_identity($report_dir, "dir") ne $dir_identity;
+      exit 1 if !defined(path_identity($report, "file")) || path_identity($report, "file") ne $report_identity;
+      rename($tmp_name, "$origin.meta") or exit 1;
+      exit 1 if !defined(path_identity("$research_state/$origin.meta", "file"));
     } elsif ($mode ne "digest" && $mode ne "check") {
       exit 1;
     }
     print "$digest\n";
-  ' "$mode" "$origin" "$expected" "$staged" "$published" "$DATA" \
+  ' "$mode" "$origin" "$expected" "$repo" "$DATA" "$STATE" \
     "$FM_ATTACH_PINNED_DATA_FD" "$FM_ATTACH_PINNED_DIR_FD" "$FM_ATTACH_PINNED_REPORT_FD"
 }
 
@@ -403,7 +439,7 @@ show_field_value() {  # <show-output> <field>
 }
 
 origin_exists_here() {  # <origin-id>
-  [ -f "$(origin_meta_path "$1")" ] && return 0
+  load_origin_meta "$1" && return 0
   [ -f "$DATA/$1/report.md" ] && return 0
   task_show "$1" >/dev/null 2>&1
 }
@@ -427,13 +463,16 @@ meta_value() {  # <meta> <key>
   grep "^$2=" "$1" 2>/dev/null | tail -1 | cut -d= -f2- || true
 }
 
+meta_text_value() {  # <metadata-text> <key>
+  printf '%s\n' "$1" | grep "^$2=" 2>/dev/null | tail -1 | cut -d= -f2- || true
+}
+
 origin_open_decisions() {  # <origin-id>
-  local origin=$1 meta status_file="$STATE/$1.status" open kind last verb
-  meta=$(origin_meta_path "$origin")
+  local origin=$1 status_file="$STATE/$1.status" open kind last verb
   open=$(status_open_decisions "$status_file")
   [ -n "$open" ] || return 0
-  [ -f "$meta" ] || { printf '%s' "$open"; return 0; }
-  kind=$(meta_value "$meta" kind)
+  load_origin_meta "$origin" || { printf '%s' "$open"; return 0; }
+  kind=$(meta_text_value "$ORIGIN_META_TEXT" kind)
   [ -n "$kind" ] || kind=ship
   if [ "$kind" != secondmate ] && [ "$kind" != research ]; then
     last=$(last_status_line "$status_file")
@@ -562,9 +601,9 @@ command_hold() {
     [ -n "$title" ] || fail "--title is required to create task $id"
     validate_one_line title "$title"
     if [ -z "$repo" ] && [ -n "$origin" ]; then
-      origin_meta=$(origin_meta_path "$origin")
-      if [ -f "$origin_meta" ] && [ ! -L "$origin_meta" ]; then
-        repo=$(meta_value "$origin_meta" project)
+      if load_origin_meta "$origin"; then
+        origin_meta=$ORIGIN_META_TEXT
+        repo=$(meta_text_value "$origin_meta" project)
         repo=${repo%/}
         repo=${repo##*/}
       fi
@@ -919,19 +958,110 @@ command_answers() {
 
 RESEARCH_KIND=research
 RESEARCH_STATE="$STATE/captain-hold-origins"
+ORIGIN_META_SOURCE=
+ORIGIN_META_PATH=
+ORIGIN_META_TEXT=
 
 research_meta_path() {  # <origin-id>
   printf '%s/%s.meta\n' "$RESEARCH_STATE" "$1"
 }
 
-origin_meta_path() {  # <origin-id>
-  local live="$STATE/$1.meta" research
-  research=$(research_meta_path "$1")
+research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
+  local mode=$1 origin=$2 keys=${3:-}
+  perl -MFcntl=:DEFAULT,:mode -MFile::Spec -MFile::Temp=tempfile -e '
+    use strict;
+    use warnings;
+
+    my ($mode, $origin, $keys, $state) = @ARGV;
+    $state = File::Spec->rel2abs($state);
+    my $research_state = "$state/captain-hold-origins";
+    my $meta_path = "$research_state/$origin.meta";
+    my $nofollow = eval { Fcntl::O_NOFOLLOW() };
+    my $directory = eval { Fcntl::O_DIRECTORY() };
+    exit 2 if !defined($nofollow) || !defined($directory);
+
+    sub fd_identity {
+      my ($fh, $kind) = @_;
+      my @st = stat($fh);
+      return if !@st;
+      return if $kind eq "dir" && !S_ISDIR($st[2]);
+      return if $kind eq "file" && !S_ISREG($st[2]);
+      return join(":", @st[0, 1, 2]) if $kind eq "dir";
+      return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
+    }
+
+    sub path_identity {
+      my ($path, $kind) = @_;
+      my @st = lstat($path);
+      return if !@st || S_ISLNK($st[2]);
+      return if $kind eq "dir" && !S_ISDIR($st[2]);
+      return if $kind eq "file" && !S_ISREG($st[2]);
+      return join(":", @st[0, 1, 2]) if $kind eq "dir";
+      return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
+    }
+
+    sysopen(my $state_fh, $state, O_RDONLY | $nofollow | $directory) or exit 2;
+    my $state_identity = fd_identity($state_fh, "dir");
+    exit 2 if !defined($state_identity) || !defined(path_identity($state, "dir"))
+      || path_identity($state, "dir") ne $state_identity;
+    chdir($state_fh) or exit 2;
+    my @namespace = lstat("captain-hold-origins");
+    exit 1 if !@namespace;
+    sysopen(my $research_fh, "captain-hold-origins", O_RDONLY | $nofollow | $directory) or exit 2;
+    my $research_identity = fd_identity($research_fh, "dir");
+    exit 2 if !defined($research_identity) || !defined(path_identity($research_state, "dir"))
+      || path_identity($research_state, "dir") ne $research_identity;
+    chdir($research_fh) or exit 2;
+    my @meta = lstat("$origin.meta");
+    exit 1 if !@meta;
+    sysopen(my $meta_fh, "$origin.meta", O_RDONLY | $nofollow) or exit 2;
+    binmode($meta_fh);
+    my $meta_identity = fd_identity($meta_fh, "file");
+    exit 2 if !defined($meta_identity) || !defined(path_identity($meta_path, "file"))
+      || path_identity($meta_path, "file") ne $meta_identity;
+    local $/;
+    my $content = <$meta_fh>;
+    $content = "" if !defined($content);
+    exit 2 if !defined(fd_identity($meta_fh, "file")) || fd_identity($meta_fh, "file") ne $meta_identity;
+    if ($mode eq "snapshot") {
+      binmode(STDOUT);
+      print $content or exit 2;
+      exit 0;
+    }
+    exit 2 if $mode ne "attest";
+    my ($tmp_fh, $tmp_name) = tempfile(".$origin.meta.complete.XXXXXX", DIR => ".", UNLINK => 1);
+    binmode($tmp_fh);
+    print {$tmp_fh} $content, "decisions_reviewed=1\ndecision_keys=$keys\n" or exit 2;
+    close($tmp_fh) or exit 2;
+    exit 2 if !defined(path_identity($state, "dir")) || path_identity($state, "dir") ne $state_identity;
+    exit 2 if !defined(path_identity($research_state, "dir"))
+      || path_identity($research_state, "dir") ne $research_identity;
+    exit 2 if !defined(path_identity($meta_path, "file")) || path_identity($meta_path, "file") ne $meta_identity;
+    rename($tmp_name, "$origin.meta") or exit 2;
+    exit 2 if !defined(path_identity($meta_path, "file"));
+  ' "$mode" "$origin" "$keys" "$STATE"
+}
+
+load_origin_meta() {  # <origin-id>
+  local origin=$1 live="$STATE/$1.meta" rc
+  ORIGIN_META_SOURCE=
+  ORIGIN_META_PATH=$(research_meta_path "$origin")
+  ORIGIN_META_TEXT=
   if [ -e "$live" ] || [ -L "$live" ]; then
-    printf '%s\n' "$live"
-  else
-    printf '%s\n' "$research"
+    [ -f "$live" ] && [ ! -L "$live" ] || fail "origin metadata is unsafe: $live"
+    ORIGIN_META_TEXT=$(cat -- "$live") || fail "cannot read origin metadata: $live"
+    ORIGIN_META_SOURCE=live
+    ORIGIN_META_PATH=$live
+    return 0
   fi
+  if ORIGIN_META_TEXT=$(research_meta_access snapshot "$origin"); then
+    ORIGIN_META_SOURCE=research
+    return 0
+  else
+    rc=$?
+  fi
+  [ "$rc" -eq 1 ] || fail "attached origin directory is unsafe: $RESEARCH_STATE"
+  return 1
 }
 
 # A path segment that could walk outside the intended directory even though it
@@ -964,7 +1094,7 @@ command_attach() {
 }
 
 command_attach_pinned() {
-  local origin=${1:-} meta live_meta report report_digest existing_kind existing_digest tmp show repo
+  local origin=${1:-} live_meta report report_digest existing_meta existing_kind existing_digest show repo rc
   [ "$#" -eq 1 ] || exit 2
   validate_slug origin-id "$origin"
   is_traversal_segment "$origin" && fail "origin-id must not be . or ..: $origin"
@@ -978,7 +1108,6 @@ command_attach_pinned() {
     || fail "report changed or became unsafe while attaching: $report"
 
   live_meta="$STATE/$origin.meta"
-  meta=$(research_meta_path "$origin")
   CAPTAIN_META_LOCK=$(fm_meta_lock_path "$live_meta") || fail "could not resolve origin metadata lock"
   fm_lock_acquire_wait "$CAPTAIN_META_LOCK"
   CAPTAIN_META_LOCK_HELD=1
@@ -990,44 +1119,22 @@ command_attach_pinned() {
     existing_kind=$(meta_value "$live_meta" kind)
     fail "task $origin already has an ordinary kind=${existing_kind:-ship} metadata record; attach is only for an origin with no live worker record"
   fi
-  if [ -e "$meta" ] || [ -L "$meta" ]; then
-    [ -f "$meta" ] && [ ! -L "$meta" ] || fail "attached origin metadata is unsafe: $meta"
-    existing_kind=$(meta_value "$meta" kind)
+  if existing_meta=$(research_meta_access snapshot "$origin"); then
+    existing_kind=$(meta_text_value "$existing_meta" kind)
     [ "$existing_kind" = "$RESEARCH_KIND" ] \
       || fail "attached origin $origin has an invalid kind=${existing_kind:-missing} record"
-    existing_digest=$(meta_value "$meta" report_digest)
+    existing_digest=$(meta_text_value "$existing_meta" report_digest)
     if [ "$existing_digest" = "$report_digest" ]; then
       printf 'attached: %s (already attached, unchanged)\n' "$origin"
       return 0
     fi
     fail "origin $origin is already attached to a different report (digest mismatch); resolve the conflict before reattaching"
-  fi
-  if [ -e "$RESEARCH_STATE" ] || [ -L "$RESEARCH_STATE" ]; then
-    [ -d "$RESEARCH_STATE" ] && [ ! -L "$RESEARCH_STATE" ] \
-      || fail "attached origin directory is unsafe: $RESEARCH_STATE"
   else
-    if ! (umask 077; mkdir -- "$RESEARCH_STATE") 2>/dev/null; then
-      if [ ! -d "$RESEARCH_STATE" ] || [ -L "$RESEARCH_STATE" ]; then
-        fail "cannot create attached origin directory: $RESEARCH_STATE"
-      fi
-    fi
+    rc=$?
   fi
-
-  tmp=$(umask 077; mktemp "$RESEARCH_STATE/.$origin.meta.attach.XXXXXX") \
-    || fail "cannot stage origin metadata for $origin"
-  if ! {
-    printf 'kind=%s\n' "$RESEARCH_KIND"
-    printf 'report=data/%s/report.md\n' "$origin"
-    printf 'report_digest=%s\n' "$report_digest"
-    [ -z "$repo" ] || printf 'project=%s\n' "$repo"
-  } > "$tmp"; then
-    rm -f -- "$tmp"
-    fail "cannot stage origin metadata for $origin"
-  fi
-  if ! pinned_report_guard publish "$origin" "$report_digest" "$tmp" "$meta" >/dev/null; then
-    rm -f -- "$tmp"
-    fail "report changed or became unsafe while publishing origin metadata for $origin"
-  fi
+  [ "$rc" -eq 1 ] || fail "attached origin directory is unsafe: $RESEARCH_STATE"
+  pinned_report_guard publish "$origin" "$report_digest" "$repo" >/dev/null \
+    || fail "report, state, or attached origin directory changed or became unsafe while publishing origin metadata for $origin"
   printf 'attached: %s\n' "$origin"
 }
 
@@ -1040,11 +1147,11 @@ command_complete() {
   CAPTAIN_META_LOCK=$(fm_meta_lock_path "$lock_meta") || fail "could not resolve task metadata lock"
   fm_lock_acquire_wait "$CAPTAIN_META_LOCK"
   CAPTAIN_META_LOCK_HELD=1
-  meta=$(origin_meta_path "$origin")
   require_tasks_axi
   origin_exists_here "$origin" || fail "origin $origin is not owned by the active home $FM_HOME"
-  [ -f "$meta" ] && [ ! -L "$meta" ] \
+  load_origin_meta "$origin" \
     || fail "origin metadata is absent for $origin; publish or attach authoritative metadata, then retry complete"
+  meta=$ORIGIN_META_TEXT
   if [ "$#" -eq 1 ] && [ "$1" = --none ]; then
     supplied=''
   else
@@ -1055,7 +1162,7 @@ command_complete() {
       shift
     done
   fi
-  previous=$(meta_value "$meta" decision_keys)
+  previous=$(meta_text_value "$meta" decision_keys)
   keys=$(sorted_key_union "$previous" "$supplied")
   if [ -n "$keys" ]; then
     while IFS= read -r entry; do
@@ -1073,8 +1180,13 @@ EOF
     fail "origin $origin still has open captain decisions in its status stream; hold a captain task for what remains, or answer them, before attesting --none"
   fi
 
-  if [ "$(meta_value "$meta" decisions_reviewed)" != 1 ] || [ "$previous" != "$keys" ]; then
-    printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$keys" >> "$meta"
+  if [ "$(meta_text_value "$meta" decisions_reviewed)" != 1 ] || [ "$previous" != "$keys" ]; then
+    if [ "$ORIGIN_META_SOURCE" = research ]; then
+      research_meta_access attest "$origin" "$keys" \
+        || fail "attached origin directory is unsafe or changed while recording completion: $RESEARCH_STATE"
+    else
+      printf 'decisions_reviewed=1\ndecision_keys=%s\n' "$keys" >> "$ORIGIN_META_PATH"
+    fi
   fi
   fm_lock_release "$CAPTAIN_META_LOCK"
   CAPTAIN_META_LOCK_HELD=0
@@ -1103,12 +1215,12 @@ command_verify() {
   local origin=${1:-} meta reviewed keys entry key open
   [ "$#" -eq 1 ] || { usage >&2; exit 2; }
   validate_slug origin-id "$origin"
-  meta=$(origin_meta_path "$origin")
-  [ -f "$meta" ] && [ ! -L "$meta" ] || fail "origin metadata is absent: $meta"
+  load_origin_meta "$origin" || fail "origin metadata is absent: $ORIGIN_META_PATH"
+  meta=$ORIGIN_META_TEXT
   require_tasks_axi
-  reviewed=$(meta_value "$meta" decisions_reviewed)
+  reviewed=$(meta_text_value "$meta" decisions_reviewed)
   [ "$reviewed" = 1 ] || fail "origin $origin has no completed captain-call inventory"
-  keys=$(meta_value "$meta" decision_keys)
+  keys=$(meta_text_value "$meta" decision_keys)
   if [ -n "$keys" ]; then
     while IFS= read -r entry; do
       [ -n "$entry" ] || continue
