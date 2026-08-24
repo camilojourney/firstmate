@@ -1436,6 +1436,59 @@ EOF
   pass "an attached origin with a genuine unresolved captain call still requires the normal structured decision record"
 }
 
+test_attach_allows_concurrent_first_use_across_origins() {
+  local home first second id barrier mkdir_bin pids pid rc_any=0
+  home=$(make_home attach-concurrent-first-use)
+  first=sample-concurrent-first-research
+  second=sample-concurrent-second-research
+  for id in "$first" "$second"; do
+    mkdir -p "$home/data/$id"
+    printf '# Concurrent first-use research\n\nNothing open.\n' > "$home/data/$id/report.md"
+    tasks_in "$home" add "$id" "Concurrent first-use research" --kind scout --repo sample --start >/dev/null
+  done
+
+  barrier="$home/attach-mkdir-barrier"
+  mkdir -p "$barrier"
+  mkdir_bin=$(command -v mkdir)
+  cat > "$home/fakebin/mkdir" <<'SH'
+#!/usr/bin/env bash
+args=("$@")
+target=${!#}
+if [ "$target" = "${ATTACH_RESEARCH_STATE:-}" ]; then
+  : > "$ATTACH_MKDIR_BARRIER/${BASHPID:-$$}"
+  while :; do
+    count=0
+    for marker in "$ATTACH_MKDIR_BARRIER"/*; do
+      [ -e "$marker" ] || continue
+      count=$((count + 1))
+    done
+    [ "$count" -ge "$ATTACH_MKDIR_COUNT" ] && break
+    sleep 0.01
+  done
+fi
+exec "$REAL_MKDIR_BIN" "${args[@]}"
+SH
+  chmod +x "$home/fakebin/mkdir"
+
+  pids=()
+  for id in "$first" "$second"; do
+    ATTACH_RESEARCH_STATE="$home/state/captain-hold-origins" \
+      ATTACH_MKDIR_BARRIER="$barrier" ATTACH_MKDIR_COUNT=2 REAL_MKDIR_BIN="$mkdir_bin" \
+      run_attach "$home" "$id" > "$home/$id.out" 2>&1 &
+    pids+=("$!")
+  done
+  for pid in "${pids[@]}"; do
+    wait "$pid" || rc_any=1
+  done
+  [ "$rc_any" -eq 0 ] \
+    || fail "concurrent first attaches for different origins failed: $(cat "$home"/sample-concurrent-*.out)"
+  assert_present "$(attached_origin_meta "$home" "$first")" \
+    "the first concurrent origin was not attached"
+  assert_present "$(attached_origin_meta "$home" "$second")" \
+    "the second concurrent origin was not attached"
+  pass "concurrent first attaches for different origins share directory initialization safely"
+}
+
 test_attach_serializes_concurrent_attempts() {
   local home id meta pids i pid rc_any=0
   home=$(make_home attach-concurrency)
@@ -1495,4 +1548,5 @@ test_attach_idempotent_and_conflicting_reassociation
 test_attach_rejects_unsafe_and_missing_inputs
 test_attach_scoped_to_active_home
 test_attach_preserves_unresolved_decision_gate
+test_attach_allows_concurrent_first_use_across_origins
 test_attach_serializes_concurrent_attempts

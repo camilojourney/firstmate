@@ -888,8 +888,11 @@ command_attach() {
     [ -d "$RESEARCH_STATE" ] && [ ! -L "$RESEARCH_STATE" ] \
       || fail "attached origin directory is unsafe: $RESEARCH_STATE"
   else
-    (umask 077; mkdir -- "$RESEARCH_STATE") \
-      || fail "cannot create attached origin directory: $RESEARCH_STATE"
+    if ! (umask 077; mkdir -- "$RESEARCH_STATE") 2>/dev/null; then
+      if [ ! -d "$RESEARCH_STATE" ] || [ -L "$RESEARCH_STATE" ]; then
+        fail "cannot create attached origin directory: $RESEARCH_STATE"
+      fi
+    fi
   fi
 
   tmp=$(umask 077; mktemp "$RESEARCH_STATE/.$origin.meta.attach.XXXXXX") \
