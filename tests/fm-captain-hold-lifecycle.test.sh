@@ -1205,6 +1205,52 @@ attached_origin_meta() {  # <home> <origin-id>
   printf '%s/state/captain-hold-origins/%s.meta\n' "$1" "$2"
 }
 
+write_namespace_swap_perl_module() {  # <directory>
+  cat > "$1/NamespaceSwap.pm" <<'PERL'
+package NamespaceSwap;
+use strict;
+use warnings;
+
+our $swapped = 0;
+
+sub requested {
+  my ($mode) = @_;
+  return 0 if ($ENV{FM_TEST_NAMESPACE_SWAP_MODE} // '') ne $mode;
+  return scalar grep { $_ eq $mode } @ARGV;
+}
+
+sub swap_namespace {
+  return if $swapped;
+  my $namespace = $ENV{FM_TEST_NAMESPACE_PATH};
+  my $detached = $ENV{FM_TEST_NAMESPACE_DETACHED};
+  my $target = $ENV{FM_TEST_NAMESPACE_TARGET};
+  CORE::rename($namespace, $detached) or die "cannot detach namespace: $!";
+  symlink($target, $namespace) or die "cannot replace namespace: $!";
+  $swapped = 1;
+}
+
+BEGIN {
+  *CORE::GLOBAL::rename = sub {
+    my ($from, $to) = @_;
+    my $renamed = CORE::rename($from, $to);
+    if ($renamed && !$swapped
+      && (requested('publish') || requested('attest'))
+      && $to eq "$ENV{FM_TEST_NAMESPACE_ORIGIN}.meta") {
+      swap_namespace();
+    }
+    return $renamed;
+  };
+  *CORE::GLOBAL::readline = sub {
+    my $value = CORE::readline($_[0]);
+    swap_namespace() if defined($value) && !$swapped && requested('snapshot');
+    return $value;
+  };
+}
+
+1;
+PERL
+}
+
 prepare_spawn_fakebin() {  # <home>
   local home=$1 fakebin="$1/fakebin"
   cat > "$fakebin/tmux" <<'SH'
@@ -1609,6 +1655,96 @@ test_attach_scoped_to_active_home() {
   pass "attach, hold, complete, and verify reject cross-home research namespace symlinks"
 }
 
+test_attach_rejects_namespace_swaps_during_operations() {
+  local hooks home other id namespace detached target external_meta external_digest local_meta
+  hooks="$TMP_ROOT/namespace-swap-hooks"
+  mkdir -p "$hooks"
+  write_namespace_swap_perl_module "$hooks"
+
+  home=$(make_home attach-namespace-publish-swap)
+  other=$(make_home attach-namespace-publish-target)
+  id=sample-publish-swap-research
+  mkdir -p "$home/data/$id" "$other/state/captain-hold-origins"
+  printf '# Publication swap research\n\nNothing open.\n' > "$home/data/$id/report.md"
+  tasks_in "$home" add "$id" "Publication swap research" --kind scout --repo sample --start >/dev/null
+  external_meta="$other/state/captain-hold-origins/$id.meta"
+  printf 'kind=research\nreport=data/external/report.md\nreport_digest=external\n' > "$external_meta"
+  external_digest=$(shasum -a 256 "$external_meta" | awk '{print $1}')
+  namespace="$home/state/captain-hold-origins"
+  detached="$home/state/captain-hold-origins.detached"
+  target="$other/state/captain-hold-origins"
+  if PERL5LIB="$hooks" PERL5OPT=-MNamespaceSwap FM_TEST_NAMESPACE_SWAP_MODE=publish \
+    FM_TEST_NAMESPACE_PATH="$namespace" FM_TEST_NAMESPACE_DETACHED="$detached" \
+    FM_TEST_NAMESPACE_TARGET="$target" FM_TEST_NAMESPACE_ORIGIN="$id" \
+    run_attach "$home" "$id" > "$home/publish-swap.out" 2> "$home/publish-swap.err"; then
+    fail "attach reported success after its research namespace was replaced during publication"
+  fi
+  assert_grep "changed or became unsafe while publishing" "$home/publish-swap.err" \
+    "attachment publication must reject a namespace replacement"
+  [ -L "$namespace" ] || fail "publication swap fixture did not replace the active namespace"
+  assert_absent "$detached/$id.meta" \
+    "rejected attachment publication left staged metadata in the detached local namespace"
+  [ "$(shasum -a 256 "$external_meta" | awk '{print $1}')" = "$external_digest" ] \
+    || fail "attachment publication mutated the replacement home's metadata"
+
+  home=$(make_home attach-namespace-snapshot-swap)
+  other=$(make_home attach-namespace-snapshot-target)
+  id=sample-snapshot-swap-research
+  mkdir -p "$home/data/$id" "$other/state/captain-hold-origins"
+  printf '# Snapshot swap research\n\nNothing open.\n' > "$home/data/$id/report.md"
+  tasks_in "$home" add "$id" "Snapshot swap research" --kind scout --repo sample --start >/dev/null
+  run_attach "$home" "$id" >/dev/null || fail "could not create the snapshot-swap attachment fixture"
+  run_captain "$home" complete "$id" --none >/dev/null \
+    || fail "could not attest the snapshot-swap attachment fixture"
+  namespace="$home/state/captain-hold-origins"
+  detached="$home/state/captain-hold-origins.detached"
+  target="$other/state/captain-hold-origins"
+  external_meta="$target/$id.meta"
+  printf 'kind=research\ndecisions_reviewed=1\ndecision_keys=external-call\n' > "$external_meta"
+  external_digest=$(shasum -a 256 "$external_meta" | awk '{print $1}')
+  if PERL5LIB="$hooks" PERL5OPT=-MNamespaceSwap FM_TEST_NAMESPACE_SWAP_MODE=snapshot \
+    FM_TEST_NAMESPACE_PATH="$namespace" FM_TEST_NAMESPACE_DETACHED="$detached" \
+    FM_TEST_NAMESPACE_TARGET="$target" FM_TEST_NAMESPACE_ORIGIN="$id" \
+    run_captain "$home" verify "$id" > "$home/snapshot-swap.out" 2> "$home/snapshot-swap.err"; then
+    fail "verify accepted a snapshot after its research namespace was replaced"
+  fi
+  assert_grep "attached origin directory is unsafe" "$home/snapshot-swap.err" \
+    "snapshot must reject a namespace replacement before returning metadata"
+  assert_grep "decisions_reviewed=1" "$detached/$id.meta" \
+    "snapshot replacement disturbed the pinned local metadata"
+  [ "$(shasum -a 256 "$external_meta" | awk '{print $1}')" = "$external_digest" ] \
+    || fail "snapshot read or mutated the replacement home's metadata"
+
+  home=$(make_home attach-namespace-attest-swap)
+  other=$(make_home attach-namespace-attest-target)
+  id=sample-attest-swap-research
+  mkdir -p "$home/data/$id" "$other/state/captain-hold-origins"
+  printf '# Attestation swap research\n\nNothing open.\n' > "$home/data/$id/report.md"
+  tasks_in "$home" add "$id" "Attestation swap research" --kind scout --repo sample --start >/dev/null
+  run_attach "$home" "$id" >/dev/null || fail "could not create the attestation-swap attachment fixture"
+  namespace="$home/state/captain-hold-origins"
+  detached="$home/state/captain-hold-origins.detached"
+  target="$other/state/captain-hold-origins"
+  external_meta="$target/$id.meta"
+  printf 'kind=research\nreport=data/external/report.md\nreport_digest=external\n' > "$external_meta"
+  external_digest=$(shasum -a 256 "$external_meta" | awk '{print $1}')
+  if PERL5LIB="$hooks" PERL5OPT=-MNamespaceSwap FM_TEST_NAMESPACE_SWAP_MODE=attest \
+    FM_TEST_NAMESPACE_PATH="$namespace" FM_TEST_NAMESPACE_DETACHED="$detached" \
+    FM_TEST_NAMESPACE_TARGET="$target" FM_TEST_NAMESPACE_ORIGIN="$id" \
+    run_captain "$home" complete "$id" --none > "$home/attest-swap.out" 2> "$home/attest-swap.err"; then
+    fail "complete reported success after its research namespace was replaced during attestation"
+  fi
+  assert_grep "unsafe or changed while recording completion" "$home/attest-swap.err" \
+    "completion attestation must reject a namespace replacement"
+  local_meta="$detached/$id.meta"
+  assert_present "$local_meta" "completion rollback lost the pinned local attachment"
+  assert_no_grep "decisions_reviewed=" "$local_meta" \
+    "rejected completion left an attestation in the detached local namespace"
+  [ "$(shasum -a 256 "$external_meta" | awk '{print $1}')" = "$external_digest" ] \
+    || fail "completion attestation mutated the replacement home's metadata"
+  pass "snapshot, attachment publication, and completion attestation reject namespace replacements"
+}
+
 test_attach_preserves_unresolved_decision_gate() {
   local home id
   home=$(make_home attach-unresolved-decisions)
@@ -1884,6 +2020,7 @@ test_attach_idempotent_and_conflicting_reassociation
 test_attach_rejects_unsafe_and_missing_inputs
 test_attach_rejects_report_swap_during_metadata_lock_wait
 test_attach_scoped_to_active_home
+test_attach_rejects_namespace_swaps_during_operations
 test_attach_preserves_unresolved_decision_gate
 test_attach_allows_concurrent_first_use_across_origins
 test_attach_serializes_complete_first_ordering

@@ -308,6 +308,20 @@ pinned_report_guard() {  # <mode> <origin-id> [expected-digest] [repo]
       return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
     }
 
+    sub fd_inode_identity {
+      my ($fh) = @_;
+      my @st = stat($fh);
+      return if !@st || !S_ISREG($st[2]);
+      return join(":", @st[0, 1]);
+    }
+
+    sub path_inode_identity {
+      my ($path) = @_;
+      my @st = lstat($path);
+      return if !@st || S_ISLNK($st[2]) || !S_ISREG($st[2]);
+      return join(":", @st[0, 1]);
+    }
+
     open(my $data_fh, "<&$data_fd") or exit 1;
     open(my $dir_fh, "<&$dir_fd") or exit 1;
     open(my $report_fh, "<&$report_fd") or exit 1;
@@ -353,7 +367,11 @@ pinned_report_guard() {  # <mode> <origin-id> [expected-digest] [repo]
       binmode($tmp_fh);
       print {$tmp_fh} "kind=research\nreport=data/$origin/report.md\nreport_digest=$digest\n" or exit 1;
       print {$tmp_fh} "project=$repo\n" or exit 1 if length($repo);
+      my $staged_inode = fd_inode_identity($tmp_fh);
+      exit 1 if !defined($staged_inode);
       close($tmp_fh) or exit 1;
+      exit 1 if !defined(fd_identity($state_fh, "dir")) || fd_identity($state_fh, "dir") ne $state_identity;
+      exit 1 if !defined(fd_identity($research_fh, "dir")) || fd_identity($research_fh, "dir") ne $research_identity;
       exit 1 if !defined(path_identity($state, "dir")) || path_identity($state, "dir") ne $state_identity;
       exit 1 if !defined(path_identity($research_state, "dir"))
         || path_identity($research_state, "dir") ne $research_identity;
@@ -361,7 +379,22 @@ pinned_report_guard() {  # <mode> <origin-id> [expected-digest] [repo]
       exit 1 if !defined(path_identity($report_dir, "dir")) || path_identity($report_dir, "dir") ne $dir_identity;
       exit 1 if !defined(path_identity($report, "file")) || path_identity($report, "file") ne $report_identity;
       rename($tmp_name, "$origin.meta") or exit 1;
-      exit 1 if !defined(path_identity("$research_state/$origin.meta", "file"));
+      my $published_here = path_inode_identity("$origin.meta");
+      my $published_canonical = path_inode_identity("$research_state/$origin.meta");
+      my $published_safely = defined($published_here) && $published_here eq $staged_inode
+        && defined($published_canonical) && $published_canonical eq $staged_inode
+        && defined(fd_identity($state_fh, "dir")) && fd_identity($state_fh, "dir") eq $state_identity
+        && defined(fd_identity($research_fh, "dir")) && fd_identity($research_fh, "dir") eq $research_identity
+        && defined(path_identity($state, "dir")) && path_identity($state, "dir") eq $state_identity
+        && defined(path_identity($research_state, "dir"))
+        && path_identity($research_state, "dir") eq $research_identity
+        && defined(path_identity($data, "dir")) && path_identity($data, "dir") eq $data_identity
+        && defined(path_identity($report_dir, "dir")) && path_identity($report_dir, "dir") eq $dir_identity
+        && defined(path_identity($report, "file")) && path_identity($report, "file") eq $report_identity;
+      if (!$published_safely) {
+        unlink("$origin.meta") if defined($published_here) && $published_here eq $staged_inode;
+        exit 1;
+      }
     } elsif ($mode ne "digest" && $mode ne "check") {
       exit 1;
     }
@@ -1000,6 +1033,20 @@ research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
       return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
     }
 
+    sub fd_inode_identity {
+      my ($fh) = @_;
+      my @st = stat($fh);
+      return if !@st || !S_ISREG($st[2]);
+      return join(":", @st[0, 1]);
+    }
+
+    sub path_inode_identity {
+      my ($path) = @_;
+      my @st = lstat($path);
+      return if !@st || S_ISLNK($st[2]) || !S_ISREG($st[2]);
+      return join(":", @st[0, 1]);
+    }
+
     sysopen(my $state_fh, $state, O_RDONLY | $nofollow | $directory) or exit 2;
     my $state_identity = fd_identity($state_fh, "dir");
     exit 2 if !defined($state_identity) || !defined(path_identity($state, "dir"))
@@ -1019,26 +1066,56 @@ research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
     my $meta_identity = fd_identity($meta_fh, "file");
     exit 2 if !defined($meta_identity) || !defined(path_identity($meta_path, "file"))
       || path_identity($meta_path, "file") ne $meta_identity;
+    my $identities_valid = sub {
+      return defined(fd_identity($state_fh, "dir")) && fd_identity($state_fh, "dir") eq $state_identity
+        && defined(fd_identity($research_fh, "dir")) && fd_identity($research_fh, "dir") eq $research_identity
+        && defined(fd_identity($meta_fh, "file")) && fd_identity($meta_fh, "file") eq $meta_identity
+        && defined(path_identity($state, "dir")) && path_identity($state, "dir") eq $state_identity
+        && defined(path_identity($research_state, "dir"))
+        && path_identity($research_state, "dir") eq $research_identity
+        && defined(path_identity($meta_path, "file")) && path_identity($meta_path, "file") eq $meta_identity;
+    };
     local $/;
     my $content = <$meta_fh>;
     $content = "" if !defined($content);
-    exit 2 if !defined(fd_identity($meta_fh, "file")) || fd_identity($meta_fh, "file") ne $meta_identity;
+    exit 2 if !$identities_valid->();
     if ($mode eq "snapshot") {
       binmode(STDOUT);
       print $content or exit 2;
+      exit 2 if !$identities_valid->();
       exit 0;
     }
     exit 2 if $mode ne "attest";
     my ($tmp_fh, $tmp_name) = tempfile(".$origin.meta.complete.XXXXXX", DIR => ".", UNLINK => 1);
     binmode($tmp_fh);
     print {$tmp_fh} $content, "decisions_reviewed=1\ndecision_keys=$keys\n" or exit 2;
+    my $staged_inode = fd_inode_identity($tmp_fh);
+    exit 2 if !defined($staged_inode);
     close($tmp_fh) or exit 2;
-    exit 2 if !defined(path_identity($state, "dir")) || path_identity($state, "dir") ne $state_identity;
-    exit 2 if !defined(path_identity($research_state, "dir"))
-      || path_identity($research_state, "dir") ne $research_identity;
-    exit 2 if !defined(path_identity($meta_path, "file")) || path_identity($meta_path, "file") ne $meta_identity;
-    rename($tmp_name, "$origin.meta") or exit 2;
-    exit 2 if !defined(path_identity($meta_path, "file"));
+    exit 2 if !$identities_valid->();
+    my ($backup_fh, $backup_name) = tempfile(".$origin.meta.complete-backup.XXXXXX", DIR => ".", UNLINK => 1);
+    close($backup_fh) or exit 2;
+    unlink($backup_name) or exit 2;
+    link("$origin.meta", $backup_name) or exit 2;
+    rename($tmp_name, "$origin.meta") or do { unlink($backup_name); exit 2; };
+    my $published_here = path_inode_identity("$origin.meta");
+    my $published_canonical = path_inode_identity($meta_path);
+    my $published_safely = defined($published_here) && $published_here eq $staged_inode
+      && defined($published_canonical) && $published_canonical eq $staged_inode
+      && defined(fd_identity($state_fh, "dir")) && fd_identity($state_fh, "dir") eq $state_identity
+      && defined(fd_identity($research_fh, "dir")) && fd_identity($research_fh, "dir") eq $research_identity
+      && defined(path_identity($state, "dir")) && path_identity($state, "dir") eq $state_identity
+      && defined(path_identity($research_state, "dir"))
+      && path_identity($research_state, "dir") eq $research_identity;
+    if (!$published_safely) {
+      if (defined($published_here) && $published_here eq $staged_inode) {
+        rename($backup_name, "$origin.meta") or exit 2;
+      } else {
+        unlink($backup_name);
+      }
+      exit 2;
+    }
+    unlink($backup_name) or exit 2;
   ' "$mode" "$origin" "$keys" "$STATE"
 }
 
