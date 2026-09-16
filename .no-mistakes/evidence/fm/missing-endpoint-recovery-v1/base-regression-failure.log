@@ -1,0 +1,4 @@
+not ok - a supported relaunch should recreate a positively missing Herdr endpoint
+error: task rl45's recorded endpoint is gone, so there is no agent to stop; reconcile the task before any further control action
+error: relaunch of rl45 failed while stopping the old agent and its state is 'missing'; the durable record and progress note were retained for recovery: expected exit 0, got 1
+base_regression_exit=1
