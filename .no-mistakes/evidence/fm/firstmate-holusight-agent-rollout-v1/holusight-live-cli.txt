@@ -1,0 +1,40 @@
+== disabled ==
+### Holusight startup evidence
+not-used: disabled for this project; no application-repository writes
+== enabled ==
+### Holusight startup evidence
+used: local evidence lookup completed; egress=denied; usage trace owned by Holusight
+elapsed_ms=767
+evidence[20]{source,location}:
+  AGENTS.md,line 333
+  AGENTS.md,line 384
+  AGENTS.md,line 543
+  AGENTS.md,line 580
+  AGENTS.md,line 603
+  AGENTS.md,line 618
+  CONTRIBUTING.md,line 43
+  CONTRIBUTING.md,line 58
+  CONTRIBUTING.md,line 66
+  CONTRIBUTING.md,line 125
+  GROK_BOT.md,line 21
+  README.md,line 51
+  README.md,line 125
+  README.md,line 218
+  README.md,line 219
+  VISION.md,line 23
+  VISION.md,line 52
+  bin/backends/cmux.sh,line 47
+  bin/backends/cmux.sh,line 48
+  bin/backends/herdr.sh,line 70
+coverage: partial
+providers_checked[4]{provider,state,detail}:
+  exact,budget_exceeded,stopped after scanning 10 files / 30 matches (scan budget reached); results are partial
+  structural,unavailable,graphify-out/graph.json not found; run `graphify update .` to build it
+  consistency,no_evidence,"no concept scope/id match for ['requested', 'behavior', 'implemented'] in the cached registry"
+  semantic,unavailable,repository is not indexed for semantic search; run `python -m holusight index .` first (never auto-triggered by `holus`)
+egress:
+  occurred: false
+  destination: null
+schema_version: 0.6.0
+== benchmark ==
+{"schema":"firstmate.holusight-benchmark.v1","enabled":true,"disabled_result":"not_used","disabled_elapsed_ms":16,"enabled_result":"used","enabled_elapsed_ms":720,"token_delta":"unknown","usability":"unknown","egress":"not_allowed_by_firstmate"}

@@ -1,0 +1,29 @@
+status=0
+project_files_before_cleanup_check:
+### Holusight startup evidence
+used: local evidence lookup completed; egress=denied; usage trace owned by Holusight
+elapsed_ms=718
+evidence[1]{source,location}:
+  src/app.py,line 1
+coverage: sufficient
+providers_checked[1]{provider,state,detail}:
+  exact,ok,1 line match(es) across 1 scanned files
+egress:
+  occurred: false
+  destination: null
+schema_version: 0.6.0
+
+project_tree_after:
+total 0
+drwxr-xr-x@ 3 camiloslaptop  staff   96 Sep 25 23:32 .
+drwx------@ 5 camiloslaptop  staff  160 Sep 25 23:32 ..
+drwxr-xr-x@ 3 camiloslaptop  staff   96 Sep 25 23:32 src
+
+./src:
+total 8
+drwxr-xr-x@ 3 camiloslaptop  staff  96 Sep 25 23:32 .
+drwxr-xr-x@ 3 camiloslaptop  staff  96 Sep 25 23:32 ..
+-rw-r--r--@ 1 camiloslaptop  staff  38 Sep 25 23:32 app.py
+
+benchmark:
+{"schema":"firstmate.holusight-benchmark.v1","enabled":true,"disabled_result":"not_used","disabled_elapsed_ms":16,"enabled_result":"used","enabled_elapsed_ms":683,"token_delta":"unknown","usability":"unknown","egress":"not_allowed_by_firstmate"}

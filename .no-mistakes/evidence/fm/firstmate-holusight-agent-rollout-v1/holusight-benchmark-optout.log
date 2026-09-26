@@ -1,0 +1,3 @@
+command: benchmark with project opt-out
+{"schema":"firstmate.holusight-benchmark.v1","enabled":true,"disabled_result":"not_used","disabled_elapsed_ms":21,"enabled_result":"used","enabled_elapsed_ms":124,"token_delta":"unknown","usability":"unknown","egress":"not_allowed_by_firstmate"}
+marker_exists=yes

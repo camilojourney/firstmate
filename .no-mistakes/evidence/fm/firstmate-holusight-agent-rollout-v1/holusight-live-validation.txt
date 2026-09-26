@@ -1,0 +1,35 @@
+Live product validation
+
+1) Enabled startup against real local Holusight executable:
+$ FM_HOME=... FM_CONFIG_OVERRIDE=... HOLUS_EXECUTABLE=/Users/camiloslaptop/.local/bin/holus bin/fm-holusight.sh <isolated-project> live-project <brief>
+rc=0
+### Holusight startup evidence
+used: local evidence lookup completed; egress=denied; usage trace owned by Holusight
+elapsed_ms=817
+evidence[1]{source,location}:
+  src/app.py,line 1
+coverage: sufficient
+providers_checked[1]{provider,state,detail}:
+  exact,ok,1 line match(es) across 1 scanned files
+egress:
+  occurred: false
+  destination: null
+schema_version: 0.6.0
+project tree unchanged: yes
+
+2) Benchmark against real local Holusight executable:
+enabled config:
+{"schema":"firstmate.holusight-benchmark.v1","enabled":true,"disabled_result":"not_used","disabled_elapsed_ms":18,"enabled_result":"used","enabled_elapsed_ms":741,"token_delta":"unknown","usability":"unknown","egress":"not_allowed_by_firstmate"}
+disabled config:
+{"schema":"firstmate.holusight-benchmark.v1","enabled":false,"disabled_result":"not_used","disabled_elapsed_ms":17,"enabled_result":"not_used","token_delta":"unknown","usability":"unknown","egress":"not_allowed_by_firstmate"}
+
+3) Targeted executable regressions:
+$ bash tests/fm-holusight.test.sh
+- disabled project did not invoke the executable or write project metadata
+- enabled project passed egress-deny and project-cwd assertions
+- home-local executable fallback worked without PATH discovery
+- disabled benchmark did not invoke Holusight
+- benchmark emitted both disabled_elapsed_ms and enabled_elapsed_ms with token_delta=unknown
+
+$ bash tests/fm-secondmate-harness.test.sh
+- inherited config behavior passed through the B1/B15 targeted sections before the suite's later timeout; Holusight opt-out was copied and absence mirrored in the B1 propagation path.
