@@ -1578,7 +1578,14 @@ research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
       || !defined(path_identity($report_path, "file"))
       || path_identity($report_path, "file") ne $report_identity;
     my $current_digest = Digest::SHA->new(256)->addfile($report_fh)->hexdigest;
-    exit 2 if $current_digest ne $recorded_digest;
+    if ($current_digest ne $recorded_digest) {
+      if ($mode eq "snapshot") {
+        binmode(STDOUT);
+        print $content or exit 2;
+        exit 3;
+      }
+      exit 2;
+    }
     my $reports_valid = sub {
       return 0 if !defined(fd_identity($report_fh, "file")) || fd_identity($report_fh, "file") ne $report_identity;
       return 0 if !defined(path_identity($data, "dir"))
@@ -1768,6 +1775,12 @@ command_attach_pinned() {
     fail "origin $origin is already attached to a different report (digest mismatch); resolve the conflict before reattaching"
   else
     rc=$?
+  fi
+  if [ "$rc" -eq 3 ]; then
+    existing_kind=$(meta_text_value "$existing_meta" kind)
+    [ "$existing_kind" = "$RESEARCH_KIND" ] \
+      || fail "attached origin $origin has an invalid kind=${existing_kind:-missing} record"
+    fail "origin $origin is already attached to a different report (digest mismatch); resolve the conflict before reattaching"
   fi
   [ "$rc" -eq 1 ] || fail "attached origin directory is unsafe: $RESEARCH_STATE"
   pinned_report_guard publish "$origin" "$report_digest" "$repo" >/dev/null \

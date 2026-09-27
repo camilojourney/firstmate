@@ -141,7 +141,7 @@ EOF
   set -e
   [ "$rc" -ne 0 ] || fail "completed investigation teardown erased a report-only unresolved captain call"
   assert_present "$home/state/$id.meta" "refused completion must preserve investigation metadata"
-  assert_grep "cannot be torn down" "$home/teardown.err" "refusal must be explicit"
+  assert_grep "refusing automatic teardown" "$home/teardown.err" "refusal must be explicit"
   pass "report-only unresolved captain call is reproduced and completion refuses before loss"
 }
 
