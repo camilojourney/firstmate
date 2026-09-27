@@ -177,6 +177,9 @@ DATA="${FM_DATA_OVERRIDE:-$FM_HOME/data}"
 # shellcheck source=bin/fm-tasks-axi-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-tasks-axi-lib.sh"
+# shellcheck source=bin/fm-backlog-transition-lib.sh
+# shellcheck disable=SC1091
+. "$SCRIPT_DIR/fm-backlog-transition-lib.sh"
 # shellcheck source=bin/fm-wake-lib.sh
 # shellcheck disable=SC1091
 . "$SCRIPT_DIR/fm-wake-lib.sh"
@@ -469,7 +472,16 @@ load_decision() {  # <path>; sets DECISION_TEXT and DECISION_DIGEST
 }
 
 tasks_axi() {
-  (cd "$FM_HOME" && tasks-axi "$@")
+  local data file root backend
+  data=$(fm_backlog_data_absolute "$DATA") || fail "data directory cannot be resolved: $DATA"
+  root=$(fm_backlog_root "$data") || fail "$FM_BACKLOG_TRANSITION_ERROR"
+  backend=$(fm_tasks_axi_backend "$root") || return 2
+  if [ "$backend" = markdown ]; then
+    file=$(fm_backlog_file "$data") || fail "$FM_BACKLOG_TRANSITION_ERROR"
+    (cd "$root" && tasks-axi "$@" --file "$file")
+  else
+    (cd "$root" && tasks-axi "$@")
+  fi
 }
 
 require_tasks_axi() {
@@ -478,17 +490,39 @@ require_tasks_axi() {
     || fail "tasks-axi does not expose the captain-hold contract"
 }
 
-task_show() {  # <id>
-  tasks_axi show "$1" --full 2>/dev/null
+# Read one row into TASK_SHOW_OUTPUT; a non-zero return means the row is
+# absent. A read that could not finish inside its bound is NOT absence, and
+# every caller below would otherwise spend it as one - minting a duplicate task,
+# skipping a keyed answer, or reporting a task that exists as missing. So the
+# bound's own status stops the command instead, loudly and by name, and it
+# leaves 124 intact rather than collapsing to fail's 1 so a caller running this
+# inside a command substitution can still tell a wedged backend from a
+# genuinely unknown id.
+TASK_SHOW_OUTPUT=
+task_show() {  # <id>; sets TASK_SHOW_OUTPUT
+  local data status=0 reason
+  data=$(fm_backlog_data_absolute "$DATA") || fail "data directory cannot be resolved: $DATA"
+  TASK_SHOW_OUTPUT=$(fm_backlog_row_show "$data" "$1" --full 2>/dev/null) || status=$?
+  if [ "$status" -eq 124 ]; then
+    reason=${TASK_SHOW_OUTPUT%%$'\n'*}
+    printf 'fm-captain-hold: %s\n' \
+      "${reason:-tasks-axi show $1 exceeded its backlog read bound}" >&2
+    exit 124
+  fi
+  return "$status"
 }
 
+# Read one row into `show`, failing with <absence-message> only when the read
+# genuinely failed; a read-bound hit (124) stops the command by name instead.
+# task_show must be called in THIS shell, not inside a command substitution:
+# it carries the row in TASK_SHOW_OUTPUT, which a subshell cannot hand back.
 task_show_or_fail() {  # <id> <absence-message>; sets show
-  show=$(task_show "$1") || {
+  task_show "$1" || {
     [ "$?" -ne 124 ] || fail "the backlog backend exceeded its read bound reading $1"
     fail "$2"
   }
+  show=$TASK_SHOW_OUTPUT
 }
-
 
 show_field() {  # <show-output> <field>
   local output=$1 field=$2
@@ -624,15 +658,27 @@ recorded_resolution_mode() {  # <task-body>
   printf '%s' "$rest"
 }
 
+closed_answer_replay_mode_compatible() {  # <mode> <task-body>
+  case "$1" in
+    answered|repaired|routed) return 0 ;;
+  esac
+  return 1
+}
+
+# The record's label is what keeps an evidence-backed reconciliation from
+# reading as the captain's own words. `reconciled` closes a call that went moot
+# and carries verified evidence; every other mode carries what the captain said.
 resolution_block() {  # <mode>
-  printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n\nCaptain decision:\n%s\n' \
-    "$DECISION_DIGEST" "$1" "$DECISION_TEXT"
+  local label='Captain decision:'
+  [ "$1" != reconciled ] || label='Reconciliation evidence:'
+  printf 'Resolution recorded by fm-captain-hold.\nDecision digest: %s\nResolution mode: %s\n\n%s\n%s\n' \
+    "$DECISION_DIGEST" "$1" "$label" "$DECISION_TEXT"
 }
 
 # Durable state of one captain call: an active captain hold (annotations
 # surviving even when a date gate has expired) or a recorded captain answer.
-verify_hold_durable() {  # <task-id>
-  local id=$1 show state hold_kind body
+verify_hold_durable() {  # <task-id> [resolution-kind]
+  local id=${1%% *} show state hold_kind body
   show=$(task_show "$id") || fail "captain-held task $id is absent from $FM_HOME/data/backlog.md"
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
@@ -646,27 +692,291 @@ verify_hold_durable() {  # <task-id>
   fail "captain-held task $id is neither held for the captain nor closed with a recorded captain answer"
 }
 
+# --- migrated legacy-id resolution on the Beads backend ---------------------
+#
+# A home that moved its backlog from markdown to Beads no longer carries the
+# legacy hold ids a scout report attested: the migration rehomed every held
+# row under a prefixed fm- id and recorded its markdown identity in the row's
+# notes as "migrated from data/backlog.md id <legacy id>", alone or followed by
+# " on <date>" (fm-hold-migration wrote the dated form on 2026-09-04). When an
+# attested legacy id resolves to no task, the beads backend accepts the row the
+# migration produced, found by scanning the configured graph's notes for either
+# form of that marker line, and only when no row carries the marker by
+# prepending the configured prefix to the legacy id - a name-only guess, so it
+# is accepted solely for a row still held for the captain and only when it is
+# the single such row. A markdown home keeps its legacy rows verbatim, so its
+# exact-id resolution is unchanged.
+
+CAPTAIN_MIGRATION_SCAN_LOADED=0
+CAPTAIN_MIGRATION_SCAN_JSON=
+NL_SEP=$'\n'
+
+# Section-aware [beads] extraction from a .tasks.toml: only keys inside the
+# [beads] section, comments stripped. Prints "<key> <value>" lines.
+captain_beads_toml_entries() {  # <toml-file>
+  [ -f "$1" ] || return 0
+  LC_ALL=C awk '
+    function trim(v) { sub(/^[[:space:]]+/, "", v); sub(/[[:space:]]+$/, "", v); return v }
+    BEGIN { inbeads = 0 }
+    {
+      line = $0
+      sub(/[[:space:]]*#.*/, "", line)
+      line = trim(line)
+      if (line ~ /^\[[^]]+\]$/) { inbeads = (line == "[beads]"); next }
+      if (!inbeads) next
+      if (line ~ /^(prefix|path|binary)[[:space:]]*=/) {
+        key = line
+        sub(/[[:space:]]*=.*/, "", key)
+        sub(/^[^=]*=[[:space:]]*/, "", line)
+        gsub(/^"|"$/, "", line); gsub(/^'\''|'\''$/, "", line)
+        printf "%s %s\n", key, line
+      }
+    }
+  ' "$1"
+}
+
+captain_beads_setting() {  # <entries-output> <setting>
+  printf '%s\n' "$1" | sed -n "s/^$2 //p" | head -1
+}
+
+# Read the configured beads graph's row listing for a migration-note scan.
+# The listing is deliberately re-read per unresolvable key: the cache below
+# lives and dies with the command-substitution subshell every resolve_entry
+# call site runs in, so it cannot persist across keys - bounded by a scout
+# report's handful of attested ids. Returns 0 when the listing loads, and 2
+# with the reason on stderr when the graph cannot be read.
+captain_migration_scan_load() {  # <resolved-data-dir>
+  local data=$1 root entries bd_bin bd_path backend
+  [ "$CAPTAIN_MIGRATION_SCAN_LOADED" = 1 ] && return 0
+  root=$(fm_backlog_root "$data") || {
+    printf 'fm-captain-hold: the configured data directory cannot be resolved for a migration scan: %s\n' "$FM_BACKLOG_TRANSITION_ERROR" >&2
+    return 2
+  }
+  backend=$(fm_tasks_axi_backend "$root") || return 2
+  if [ "$backend" != beads ]; then
+    CAPTAIN_MIGRATION_SCAN_LOADED=1
+    return 0
+  fi
+  entries=$(captain_beads_toml_entries "$root/.tasks.toml")
+  bd_bin=$(captain_beads_setting "$entries" binary)
+  bd_path=$(captain_beads_setting "$entries" path)
+  bd_bin=${bd_bin:-bd}
+  if [ -z "$bd_path" ]; then
+    printf 'fm-captain-hold: the beads backend carries no graph path in %s, so a migrated hold cannot be found\n' "$root/.tasks.toml" >&2
+    return 2
+  fi
+  # A relative [beads] path resolves against the backlog root, the same rule
+  # every other .tasks.toml path consumer uses, never against the process CWD.
+  case "$bd_path" in
+    /*) ;;
+    *) bd_path="$root/$bd_path" ;;
+  esac
+  command -v "$bd_bin" >/dev/null 2>&1 || {
+    printf 'fm-captain-hold: the beads binary %s is not on PATH, so a migrated hold cannot be found\n' "$bd_bin" >&2
+    return 2
+  }
+  command -v jq >/dev/null 2>&1 || {
+    printf 'fm-captain-hold: jq is required to scan the beads graph for a migrated hold\n' >&2
+    return 2
+  }
+  local bd_err
+  bd_err=$(mktemp "${TMPDIR:-/tmp}/fm-captain-hold-bd.XXXXXX") || {
+    printf 'fm-captain-hold: cannot stage the beads graph read diagnostics\n' >&2
+    return 2
+  }
+  if ! CAPTAIN_MIGRATION_SCAN_JSON=$(BEADS_DIR="$bd_path" "$bd_bin" list --all --json 2>"$bd_err"); then
+    printf 'fm-captain-hold: reading the beads graph at %s failed (%s), so a migrated hold cannot be found\n' \
+      "$bd_path" "$(sanitize_field "$(head -c 200 "$bd_err" | tr '\n' ' ')")" >&2
+    rm -f "$bd_err"
+    return 2
+  fi
+  rm -f "$bd_err"
+  CAPTAIN_MIGRATION_SCAN_LOADED=1
+  return 0
+}
+
+# Resolve one attested legacy id to the migrated row that carries it on the
+# beads backend. Prints "<row id> <how>" and returns 0 when exactly one
+# migration matches, returns 1 when none does, and returns 2 with the reason on
+# stderr when the scan itself cannot run or is ambiguous. The marker note is the
+# authoritative evidence and is scanned first; the bare configured prefix is a
+# guess, so it only runs when no marker line matches any identity and it accepts
+# a row solely when that row is itself still held for the captain.
+resolve_migrated_entry() {  # <origin-or-empty> <entry>
+  local origin=$1 entry=$2 data root entries prefix derived show backend
+  local candidate candidate_matches prefixed matches count prefixed_matches prefixed_count
+  data=$(fm_backlog_data_absolute "$DATA") || {
+    printf 'fm-captain-hold: the migrated hold of %s cannot be resolved: %s\n' \
+      "$entry" "${FM_BACKLOG_TRANSITION_ERROR:-the configured data directory $DATA cannot be resolved}" >&2
+    return 2
+  }
+  root=$(fm_backlog_root "$data") || {
+    printf 'fm-captain-hold: the migrated hold of %s cannot be resolved: %s\n' \
+      "$entry" "${FM_BACKLOG_TRANSITION_ERROR:-the configured data directory $DATA cannot be resolved}" >&2
+    return 2
+  }
+  backend=$(fm_tasks_axi_backend "$root") || return 2
+  [ "$backend" = beads ] || return 1
+  # Every identity this entry could have been migrated under: the raw entry,
+  # and - for a pre-collapse channel key - the derived legacy identity its
+  # origin would have minted, because fm-hold-migration recorded the DERIVED
+  # id in each migrated row's marker note.
+  CAPTAIN_MIGRATION_IDENTITIES=$entry
+  if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
+    derived=$(legacy_hold_id "$origin" "$entry")
+    if [ "$derived" != "$entry" ]; then
+      CAPTAIN_MIGRATION_IDENTITIES="$CAPTAIN_MIGRATION_IDENTITIES $derived"
+    fi
+  fi
+  captain_migration_scan_load "$data" || return 2
+  matches=
+  if [ -n "$CAPTAIN_MIGRATION_SCAN_JSON" ]; then
+    for candidate in $CAPTAIN_MIGRATION_IDENTITIES; do
+      candidate_matches=$(printf '%s\n' "$CAPTAIN_MIGRATION_SCAN_JSON" | jq -r \
+        --arg exact "migrated from data/backlog.md id $candidate" \
+        --arg dated "migrated from data/backlog.md id $candidate on " \
+        '.[] | select(((.notes // "") | split("\n")) | any(. == $exact or startswith($dated))) | .id' 2>/dev/null) || {
+        printf 'fm-captain-hold: the beads graph scan for the migrated hold of %s could not be parsed\n' "$candidate" >&2
+        return 2
+      }
+      matches="${matches}${matches:+$NL_SEP}${candidate_matches}"
+    done
+    count=$(printf '%s\n' "$matches" | sed '/^$/d' | wc -l | tr -d ' ')
+    case "$count" in
+      0) : ;;
+      1) printf '%s migrated-note' "$(printf '%s\n' "$matches" | sed '/^$/d' | sed -n 1p)"; return 0 ;;
+      *)
+        printf 'fm-captain-hold: the migrated hold of %s is ambiguous: %s rows carry its marker line (identities tried: %s)\n' \
+          "$entry" "$count" "$(printf '%s' "$CAPTAIN_MIGRATION_IDENTITIES" | tr ' ' ',')" >&2
+        return 2
+        ;;
+    esac
+  fi
+  # No marker line anywhere: a mechanical migration keeps the legacy id under
+  # the configured prefix, but that name alone is evidence of nothing, so only
+  # a row still held for the captain - and only one of them - is accepted.
+  entries=$(captain_beads_toml_entries "$root/.tasks.toml")
+  prefix=$(captain_beads_setting "$entries" prefix)
+  [ -n "$prefix" ] || return 1
+  prefixed_matches=
+  for candidate in $CAPTAIN_MIGRATION_IDENTITIES; do
+    case "$prefix" in
+      *-) prefixed="$prefix$candidate" ;;
+      *) prefixed="$prefix-$candidate" ;;
+    esac
+    # Same shell rule as task_show_or_fail: the row is read out of
+    # TASK_SHOW_OUTPUT, so the read cannot sit inside a command substitution.
+    task_show "$prefixed" 2>/dev/null || {
+      [ "$?" -ne 124 ] || return 124
+      continue
+    }
+    show=$TASK_SHOW_OUTPUT
+    [ "$(show_field_value "$show" hold_kind)" = captain ] || continue
+    prefixed_matches="${prefixed_matches}${prefixed_matches:+$NL_SEP}$prefixed"
+  done
+  prefixed_count=$(printf '%s\n' "$prefixed_matches" | sed '/^$/d' | wc -l | tr -d ' ')
+  case "$prefixed_count" in
+    0) return 1 ;;
+    1) printf '%s migrated-prefix' "$prefixed_matches"; return 0 ;;
+  esac
+  printf 'fm-captain-hold: the migrated hold of %s is ambiguous: %s captain-held rows carry the configured prefix (identities tried: %s)\n' \
+    "$entry" "$prefixed_count" "$(printf '%s' "$CAPTAIN_MIGRATION_IDENTITIES" | tr ' ' ',')" >&2
+  return 2
+}
+
 # Resolve one inventory entry or channel key to the task that carries it: the
-# exact task id when it exists, else the legacy derived identity.
+# exact task id when it exists, else the legacy derived identity, else - on the
+# beads backend - the migrated row the markdown-to-beads hold migration wrote.
+# The shared boundary returns only the resolved task id so every caller uses the
+# same identity representation.
 resolve_entry() {  # <origin-or-empty> <entry>; prints the resolved id or fails
-  local origin=$1 entry=$2 legacy
-  if task_show "$entry" >/dev/null 2>&1; then
+  local origin=$1 entry=$2 legacy migrated rc
+  if task_show "$entry"; then
     printf '%s' "$entry"
     return 0
   fi
   if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
     legacy=$(legacy_hold_id "$origin" "$entry")
-    if task_show "$legacy" >/dev/null 2>&1; then
+    if task_show "$legacy"; then
       printf '%s' "$legacy"
       return 0
     fi
-    fail "no captain-held task $entry and no legacy identity $legacy in $FM_HOME/data/backlog.md"
   fi
-  fail "no captain-held task $entry in $FM_HOME/data/backlog.md"
+  rc=0
+  migrated=$(resolve_migrated_entry "$origin" "$entry") || rc=$?
+  case "$rc" in
+    0) printf '%s' "${migrated%% *}"; return 0 ;;
+    2) return 2 ;;
+    124) return 124 ;;
+  esac
+  if [ -n "$origin" ] && [ "$origin" != "$BINDING_ANY" ]; then
+    legacy=$(legacy_hold_id "$origin" "$entry")
+    fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA); the nearest legacy identity $legacy also resolves to nothing"
+  fi
+  fail "no captain-held task $entry and no migrated hold for it in this home's configured backlog (data directory $DATA)"
+}
+
+body_hold_set_timestamp() {  # <decoded-task-body>
+  printf '%s\n' "$1" \
+    | sed -n \
+      -e '1s/^Captain hold set: \([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z\)$/\1/p' \
+      -e '1s/^Captain hold set: \([0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]\)$/\1/p' \
+    | head -1
+}
+
+write_hold_set_stamp() {  # <task-id> <shown-body> <timestamp> <preserve-existing-0-or-1>
+  local id=$1 body=$2 hold_set=$3 preserve=$4 existing new_body tmp
+  body=$(decode_shown_value "$body") \
+    || fail "could not decode the existing body for $id"
+  existing=$(body_hold_set_timestamp "$body")
+  if [ "$preserve" = 1 ] && [ -n "$existing" ]; then
+    return 0
+  fi
+  if [ -n "$existing" ]; then
+    body=${body#"Captain hold set: $existing"}
+    case "$body" in
+      $'\n\n'*) body=${body#$'\n\n'} ;;
+      $'\n'*) body=${body#$'\n'} ;;
+    esac
+  fi
+  new_body=$(printf 'Captain hold set: %s' "$hold_set")
+  if [ -n "$body" ]; then
+    new_body=$(printf '%s\n\n%s' "$new_body" "$body")
+  fi
+  tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-captain-hold-stamp.XXXXXX") \
+    || fail "cannot stage the hold-set stamp"
+  if ! printf '%s\n' "$new_body" > "$tmp"; then
+    rm -f -- "$tmp"
+    fail "cannot stage the hold-set stamp for $id"
+  fi
+  if ! tasks_axi update "$id" --body-file "$tmp" >/dev/null; then
+    rm -f -- "$tmp"
+    fail "could not record the hold-set stamp on $id"
+  fi
+  rm -f -- "$tmp"
+}
+
+# Resolve one entry and verify the row it names is durably captain-held. A
+# resolution failure that is not the read bound keeps resolve_entry's own
+# status - its stderr already named the entry; 124 means the backend never
+# answered, which is not the same as an unknown entry and must not be spent
+# as absence. On success prints "<id> <how>" so the caller can keep the
+# attestation evidence.
+verify_entry_durable() {  # <origin-or-empty> <entry>; prints "<id> <how>"
+  local origin=$1 entry=$2 resolved resolve_status=0
+  resolved=$(resolve_entry "$origin" "$entry") || resolve_status=$?
+  if [ "$resolve_status" -ne 0 ]; then
+    [ "$resolve_status" -ne 124 ] \
+      || fail "the backlog backend exceeded its read bound resolving $entry"
+    exit "$resolve_status"
+  fi
+  printf '%s\n' "$resolved"
+  verify_hold_durable "${resolved%% *}"
 }
 
 command_hold() {
-  local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind origin_meta
+  local id=${1:-} title='' reason='' repo='' origin='' until='' show state existing_title body='' hold_kind hold_set occurrence
+  local existing_hold_kind='' existing_held='' preserve_hold_set=0
   [ "$#" -ge 1 ] || { usage >&2; exit 2; }
   shift
   while [ "$#" -gt 0 ]; do
@@ -692,11 +1002,23 @@ command_hold() {
       *) fail "--until must be a YYYY-MM-DD date: $until" ;;
     esac
   fi
+  hold_set=${FM_CAPTAIN_HOLD_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+  case "$hold_set" in
+    [0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]T[0-9][0-9]:[0-9][0-9]:[0-9][0-9]Z) : ;;
+    *) fail "FM_CAPTAIN_HOLD_NOW must be a UTC YYYY-MM-DDTHH:MM:SSZ timestamp" ;;
+  esac
+  acquire_task_control_lock "$id"
   require_tasks_axi
-  if show=$(task_show "$id"); then
+  if task_show "$id"; then
+    show=$TASK_SHOW_OUTPUT
     state=$(show_field "$show" state)
     [ "$state" != "done" ] \
       || fail "task $id is already closed; a new captain call needs its own task"
+    existing_hold_kind=$(show_field_value "$show" hold_kind)
+    existing_held=$(show_field_value "$show" held)
+    if [ "$existing_hold_kind" = captain ] && [ "$existing_held" = yes ]; then
+      preserve_hold_set=1
+    fi
     if [ -n "$title" ]; then
       existing_title=$(show_field_value "$show" title)
       [ "$existing_title" = "$title" ] || fail "existing task $id has a different title"
@@ -706,8 +1028,7 @@ command_hold() {
     validate_one_line title "$title"
     if [ -z "$repo" ] && [ -n "$origin" ]; then
       if load_origin_meta "$origin"; then
-        origin_meta=$ORIGIN_META_TEXT
-        repo=$(meta_text_value "$origin_meta" project)
+        repo=$(meta_text_value "$ORIGIN_META_TEXT" project)
         repo=${repo%/}
         repo=${repo##*/}
       fi
@@ -715,14 +1036,25 @@ command_hold() {
     [ -n "$repo" ] || repo=firstmate
     validate_one_line repo "$repo"
     [ -z "$origin" ] || body=$(printf 'Origin: %s' "$origin")
+    # tasks-axi add never passes --due. Beads due.required would refuse this
+    # create, and captain holds have no due semantics, so waive it for this
+    # call only. --kind captain stays metadata; Beads native type is task.
     if [ -n "$body" ]; then
-      tasks_axi add "$id" "$title" --repo "$repo" --body "$body" >/dev/null \
+      BD_DUE_REQUIRED=false tasks_axi add "$id" "$title" --kind captain --repo "$repo" --body "$body" >/dev/null \
         || fail "could not create task $id"
     else
-      tasks_axi add "$id" "$title" --repo "$repo" >/dev/null \
+      BD_DUE_REQUIRED=false tasks_axi add "$id" "$title" --kind captain --repo "$repo" >/dev/null \
         || fail "could not create task $id"
     fi
   fi
+  # Publish the timestamp before the captain-hold annotation. A concurrent
+  # snapshot may see the harmless stamp by itself, but can never see a newly
+  # held task without the timestamp that defines this hold lifecycle's age.
+  task_show_or_fail "$id" "task $id disappeared before recording its hold-set stamp"
+  write_hold_set_stamp "$id" "$(show_field "$show" body)" "$hold_set" "$preserve_hold_set"
+  task_show_or_fail "$id" "task $id disappeared while recording its hold-set stamp"
+  [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
+    || fail "task $id did not retain its hold-set stamp"
   if [ -n "$until" ]; then
     tasks_axi hold "$id" --reason "$reason" --kind captain --until "$until" >/dev/null \
       || fail "could not hold task $id for the captain"
@@ -730,19 +1062,34 @@ command_hold() {
     tasks_axi hold "$id" --reason "$reason" --kind captain >/dev/null \
       || fail "could not hold task $id for the captain"
   fi
-  show=$(task_show "$id") || fail "task $id disappeared while holding it"
+  task_show "$id" || fail "task $id disappeared while holding it"
+  show=$TASK_SHOW_OUTPUT
   hold_kind=$(show_field_value "$show" hold_kind)
   [ "$hold_kind" = captain ] || fail "task $id did not retain its captain hold"
+  occurrence=$(( $(resolution_record_count "$(show_field "$show" body)") + 1 ))
+  [ -n "$(body_hold_set_timestamp "$(show_field_value "$show" body)")" ] \
+    || fail "task $id lost its hold-set stamp while being held"
+  publish_parent_hold "$id" "$occurrence" needs-decision "$reason"
   printf '%s\n' "$id"
 }
 
-# Record a resolution block at the top of the task body, preserving the
-# previous body below it and archiving the pristine original.
+# Record a resolution block beneath any leading active hold-set stamp,
+# preserving the previous body below it and archiving the pristine original.
+# Successful closure removes the stamp to restore resolution-first ordering.
 write_resolution_record() {  # <task-id> <mode> <shown-body>
-  local id=$1 mode=$2 body=$3 new_body tmp
+  local id=$1 mode=$2 body=$3 new_body tmp hold_set
   new_body=$(resolution_block "$mode")
   body=$(decode_shown_value "$body") \
     || fail "could not decode the existing body for $id"
+  hold_set=$(body_hold_set_timestamp "$body")
+  if [ -n "$hold_set" ]; then
+    body=${body#"Captain hold set: $hold_set"}
+    case "$body" in
+      $'\n\n'*) body=${body#$'\n\n'} ;;
+      $'\n'*) body=${body#$'\n'} ;;
+    esac
+    new_body=$(printf 'Captain hold set: %s\n\n%s' "$hold_set" "$new_body")
+  fi
   if [ -n "$body" ]; then
     new_body=$(printf '%s\n\n%s' "$new_body" "$body")
   fi
@@ -765,95 +1112,6 @@ close_answered() {  # <task-id> <release-0-or-1>
   else
     tasks_axi "done" "$1" >/dev/null || fail "could not close answered captain-held task $1"
   fi
-}
-
-command_answer() {
-  local id=${1:-} decision_file='' release=0 show state hold_kind body outcome recorded_mode
-  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
-  shift
-  while [ "$#" -gt 0 ]; do
-    case "$1" in
-      --decision-file) shift; decision_file=${1:-} ;;
-      --release) release=1 ;;
-      *) usage >&2; exit 2 ;;
-    esac
-    shift
-  done
-  validate_slug task-id "$id"
-  load_decision "$decision_file"
-  require_tasks_axi
-  show=$(task_show "$id") || fail "captain-held task $id is absent from $FM_HOME/data/backlog.md"
-  state=$(show_field "$show" state)
-  hold_kind=$(show_field_value "$show" hold_kind)
-  body=$(show_field "$show" body)
-  if [ "$release" = 1 ]; then outcome=released; else outcome=answered; fi
-
-  if [ "$state" = "done" ]; then
-    if body_has_resolution_record "$body"; then
-      # An exact compatible retry is an idempotent no-op; drift is rejected.
-      [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
-        || fail "captain-held task $id records a different captain decision"
-      recorded_mode=$(recorded_resolution_mode "$body" || true)
-      [ "$recorded_mode" != released ] \
-        || fail "task $id records this answer with mode released; a closed task cannot replay that release"
-      [ "$release" = 0 ] \
-        || fail "task $id records this answer with mode ${recorded_mode:-unknown}; --release cannot reopen a closed task"
-      printf 'answered: %s\n' "$id"
-      return 0
-    fi
-    [ "$release" = 0 ] || fail "task $id is already closed; --release cannot reopen it"
-    # Closed outside this script: record the captain's answer retroactively.
-    # tasks-axi keeps hold_kind through a close, so it is the surviving proof
-    # this really was the captain's item rather than ordinary finished work.
-    [ "$hold_kind" = captain ] \
-      || fail "task $id was never held for the captain; nothing to record an answer on"
-    write_resolution_record "$id" repaired "$body"
-    show=$(task_show "$id") || fail "task $id disappeared while recording the answer"
-    [ "$(show_field "$show" state)" = "done" ] || fail "recording the answer reopened closed task $id"
-    body_has_resolution_record "$(show_field "$show" body)" \
-      || fail "captain-held task $id did not retain its durable resolution record"
-    printf 'repaired: %s\n' "$id"
-    return 0
-  fi
-
-  if [ "$hold_kind" = captain ]; then
-    # Actively the captain's item (a date-expired hold keeps its annotations
-    # and stays answerable). A matching record means an interrupted close to
-    # finish; a different digest is a NEW answer on a re-held task and gets
-    # its own record on top. Either way the close mode is the caller's flag,
-    # checked against an interrupted close's recorded mode so a retry cannot
-    # silently flip a release into a close.
-    if body_has_resolution_record "$body" \
-      && [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ]; then
-      recorded_mode=$(recorded_resolution_mode "$body" || true)
-      case "$recorded_mode" in
-        released) [ "$release" = 1 ] || fail "task $id records this answer as a release; retry with --release" ;;
-        answered) [ "$release" = 0 ] || fail "task $id records this answer as a close; retry without --release" ;;
-      esac
-      close_answered "$id" "$release"
-      printf '%s: %s\n' "$outcome" "$id"
-      return 0
-    fi
-    write_resolution_record "$id" "$outcome" "$body"
-    close_answered "$id" "$release"
-    show=$(task_show "$id") || fail "task $id disappeared after closing"
-    body_has_resolution_record "$(show_field "$show" body)" \
-      || fail "captain-held task $id did not retain its durable resolution record"
-    printf '%s: %s\n' "$outcome" "$id"
-    return 0
-  fi
-
-  # Not held and not closed: only an already-recorded release replays cleanly.
-  if body_has_resolution_record "$body"; then
-    recorded_mode=$(recorded_resolution_mode "$body" || true)
-    [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
-      || fail "task $id records a different captain decision with mode ${recorded_mode:-unknown}"
-    [ "$recorded_mode" = released ] && [ "$release" = 1 ] \
-      || fail "task $id records this answer with mode ${recorded_mode:-unknown}; replay requires matching --release"
-    printf 'released: %s\n' "$id"
-    return 0
-  fi
-  fail "task $id is not held for the captain; hold it first or name the right task"
 }
 
 # --- the one keyed-answer intake, and the source bindings that feed it --------
@@ -1198,97 +1456,6 @@ command_answer() {
     return 0
   fi
   fail "task $id is not held for the captain; hold it first or name the right task"
-}
-
-# --- the one keyed-answer intake, and the source bindings that feed it --------
-
-BINDING_DIR="$STATE/decision-bindings"
-BINDING_SCHEMA=fm-decision-binding.v1
-
-validate_source_id() {  # <source-id>
-  validate_slug source-id "$1"
-  [ "${#1}" -le 64 ] || fail "source-id must be at most 64 characters: $1"
-}
-
-binding_path() { printf '%s/%s.origin\n' "$BINDING_DIR" "$1"; }
-
-# The stored binding value, or empty when the source is unbound. An unreadable
-# or wrong-schema record is a hard error rather than a silent "unbound":
-# feeding nothing is the safe direction only when it is a deliberate choice,
-# never when it is a corrupted record.
-read_binding() {  # <source-id>
-  local path origin schema
-  path=$(binding_path "$1")
-  [ -e "$path" ] || return 0
-  [ -f "$path" ] && [ ! -L "$path" ] || fail "decision binding is unsafe: $path"
-  schema=$(sed -n 's/^schema=//p' "$path" | head -1)
-  [ "$schema" = "$BINDING_SCHEMA" ] || fail "decision binding has an incompatible schema: $path"
-  origin=$(sed -n 's/^origin=//p' "$path" | head -1)
-  if [ "$origin" != "$BINDING_ANY" ]; then
-    case "$origin" in
-      ''|*[!A-Za-z0-9._-]*) fail "decision binding has an invalid origin id: $path" ;;
-    esac
-  fi
-  printf '%s\n' "$origin"
-}
-
-command_bind() {
-  local source=${1:-} origin=${2:-} dest tmp
-  [ "$#" -ge 1 ] && [ "$#" -le 2 ] || { usage >&2; exit 2; }
-  validate_source_id "$source"
-  if [ -z "$origin" ] || [ "$origin" = --any-origin ]; then
-    origin=$BINDING_ANY
-  else
-    validate_slug legacy-origin "$origin"
-  fi
-  (umask 077; mkdir -p "$BINDING_DIR") || fail "cannot create $BINDING_DIR"
-  [ -d "$BINDING_DIR" ] && [ ! -L "$BINDING_DIR" ] || fail "decision binding dir is unsafe: $BINDING_DIR"
-  dest=$(binding_path "$source")
-  tmp=$(umask 077; mktemp "$BINDING_DIR/.origin.XXXXXX") || fail "cannot stage the decision binding"
-  if ! { printf 'schema=%s\norigin=%s\n' "$BINDING_SCHEMA" "$origin" > "$tmp" \
-    && chmod 0600 "$tmp" && mv -f -- "$tmp" "$dest"; }; then
-    rm -f -- "$tmp"
-    fail "cannot record the decision binding for $source"
-  fi
-  printf 'bound: %s -> %s\n' "$source" "$origin"
-}
-
-command_unbind() {
-  local source=${1:-}
-  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
-  validate_source_id "$source"
-  rm -f -- "$(binding_path "$source")"
-  printf 'unbound: %s\n' "$source"
-}
-
-command_binding() {
-  local source=${1:-} origin
-  [ "$#" -eq 1 ] || { usage >&2; exit 2; }
-  validate_source_id "$source"
-  origin=$(read_binding "$source") || exit 1
-  [ -n "$origin" ] || return 1
-  printf '%s\n' "$origin"
-}
-
-# The durable captain decision one keyed answer records. Pure function of its
-# inputs, so the same answer delivered twice is idempotent rather than a
-# conflicting decision.
-keyed_decision_text() {  # <source> <task-id> <answer> <label>
-  printf 'Captain answered this call through %s.\n' "$1"
-  printf 'Task: %s\n' "$2"
-  printf 'Answer: %s\n' "$3"
-  [ -z "$4" ] || printf 'Answer as shown to the captain: %s\n' "$4"
-}
-
-legacy_keyed_decision_text() {  # <source> <key> <answer> <label>
-  printf 'Captain answered this decision through %s.\n' "$1"
-  printf 'Decision key: %s\n' "$2"
-  printf 'Answer: %s\n' "$3"
-  [ -z "$4" ] || printf 'Answer as shown to the captain: %s\n' "$4"
-}
-
-sanitize_field() {  # <text>
-  printf '%s' "$1" | tr '\n\r\t' '   ' | LC_ALL=C tr -d '\000-\037\177' | cut -c1-512
 }
 
 # --- attach: durable origin identity for an already-collected report --------
