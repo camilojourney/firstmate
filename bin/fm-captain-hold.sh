@@ -679,7 +679,8 @@ resolution_block() {  # <mode>
 # surviving even when a date gate has expired) or a recorded captain answer.
 verify_hold_durable() {  # <task-id> [resolution-kind]
   local id=${1%% *} show state hold_kind body
-  show=$(task_show "$id") || fail "captain-held task $id is absent from $FM_HOME/data/backlog.md"
+  task_show "$id" || fail "captain-held task $id is absent from $FM_HOME/data/backlog.md"
+  show=$TASK_SHOW_OUTPUT
   state=$(show_field "$show" state)
   hold_kind=$(show_field_value "$show" hold_kind)
   body=$(show_field "$show" body)
@@ -1278,7 +1279,8 @@ command_answers() {
     if [ -n "$legacy_key" ]; then
       legacy_digest=$(sha256_text "$(legacy_keyed_decision_text "$source" "$legacy_key" "$answer" "$label")")
     fi
-    show=$(task_show "$id") || { printf 'skipped: %s (absent)\n' "$id"; skipped=$((skipped + 1)); continue; }
+    task_show "$id" || { printf 'skipped: %s (absent)\n' "$id"; skipped=$((skipped + 1)); continue; }
+    show=$TASK_SHOW_OUTPUT
     state=$(show_field "$show" state)
     hold_kind=$(show_field_value "$show" hold_kind)
     body=$(show_field "$show" body)
@@ -1649,8 +1651,9 @@ command_attach_pinned() {
   report="$DATA/$origin/report.md"
   require_tasks_axi
   [ -d "$STATE" ] && [ ! -L "$STATE" ] || fail "state directory is unsafe: $STATE"
-  show=$(task_show "$origin") \
+  task_show "$origin" \
     || fail "no backlog task $origin in $FM_HOME/data/backlog.md; attach requires an authoritative local task identity, never fabricated authority"
+  show=$TASK_SHOW_OUTPUT
   repo=$(show_field_value "$show" repo)
   report_digest=$(pinned_report_guard digest "$origin") \
     || fail "report changed or became unsafe while attaching: $report"
@@ -2156,7 +2159,8 @@ command_diverged() {
       while IFS= read -r key; do
         list_has_line "$tokens" "$key" || continue
         [ "$(status_key_closing_verb "$f" "$key")" = "$resolve" ] || continue
-        show=$(task_show "$id") || continue
+        task_show "$id" || continue
+        show=$TASK_SHOW_OUTPUT
         [ "$(show_field "$show" state)" != "done" ] || continue
         [ "$(show_field_value "$show" hold_kind)" = captain ] || continue
         # The title is the only free-text field here, and the report is
@@ -2218,10 +2222,11 @@ command_open() {  # <task-id> [--identity] [--distinguish-absent]
     state=${FM_BACKLOG_ROW_STATE%% *}
     if [ "$state" != "done" ] && [ "$FM_BACKLOG_ROW_HOLD_KIND" = captain ]; then
       if [ "$identity" -eq 1 ]; then
-        show=$(task_show "$id") || {
+        task_show "$id" || {
           printf 'fm-captain-hold: captain call %s is open but its record could not be read\n' "$id" >&2
           exit 2
         }
+        show=$TASK_SHOW_OUTPUT
         shown_body=$(show_field "$show" body)
         printf '%s#%s\n' \
           "$(body_hold_set_timestamp "$(decode_shown_value "$shown_body")")" \
