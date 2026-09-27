@@ -4181,7 +4181,7 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     fresh_source=$(shell_quote "$PROJ_ABS_REAL")
     fresh_root=$(shell_quote "$FRESH_TREEHOUSE_ROOT")
     fresh_holder=$(shell_quote "$ID")
-    spawn_send_text_line "$WT_TARGET" "cd -- $fresh_source && test \"\\$(git rev-parse --show-toplevel)\" = $fresh_source && fresh_wt=\\$(treehouse --root $fresh_root get --lease --lease-holder $fresh_holder) && test -n \"\\$fresh_wt\" && test \"\\$(cd -- \"\\$fresh_wt\" && pwd -P)\" != $fresh_source && cd -- \"\\$fresh_wt\"" || {
+    spawn_send_text_line "$WT_TARGET" "cd -- $fresh_source && test \"\$(git rev-parse --show-toplevel)\" = $fresh_source && fresh_wt=\$(treehouse --root $fresh_root get --lease --lease-holder $fresh_holder) && test -n \"\$fresh_wt\" && test \"\$(cd -- \"\$fresh_wt\" && pwd -P)\" != $fresh_source && cd -- \"\$fresh_wt\"" || {
       echo "error: fresh Treehouse allocation command could not be delivered; refusing to launch" >&2
       exit 1
     }
