@@ -1,0 +1,15 @@
+Live isolated lab run (real bin/fm-spawn.sh, real treehouse, private tmux socket):
+
+Command intent: spawn scout with --fresh-treehouse and raw harness `bash -lc 'sleep 20'` from a marked disposable lab home.
+
+Observed:
+- `🌳 Leased worktree ... /tmp/fm-fresh-15822/treehouse ...`
+- `bin/fm-spawn.sh: line 4184: fresh_wt: unbound variable`
+- task metadata was absent
+- fresh Treehouse status reported `No worktrees in pool.`
+
+This is a product failure before launch: the fresh allocation is acquired, but the command construction aborts before the worker can start or the allocation can be durably recorded/released by the normal lifecycle.
+
+Targeted regression commands also run:
+- `bash tests/fm-spawn-worktree-settle.test.sh`
+- `bash tests/fm-spawn-pool-base-freshen.test.sh`

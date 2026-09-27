@@ -1,0 +1,23 @@
+Fresh Treehouse live validation (Herdr lab fm-lab-fresh-live3-54105-31072)
+
+PASS: real scout spawn
+Command driven in the live Herdr pane:
+  env FM_HOME=<disposable-lab> FM_BACKEND=herdr bin/fm-spawn.sh fresh-live-scout <gate-worktree> --scout --harness pi --backend herdr --fresh-treehouse
+Observed product output:
+  spawned fresh-live-scout harness=pi kind=scout window=fm-lab-fresh-live3-54105-31072:w2:p2 worktree=/private/tmp/fm-fresh-live-scout/treehouse/.treehouse/01M3J77T3FNKZMMERTBJGVGXZ2-8bf1b0/1/01M3J77T3FNKZMMERTBJGVGXZ2
+Persisted metadata showed:
+  project=/Users/camiloslaptop/.no-mistakes/worktrees/af1f7764a4ae/01M3J77T3FNKZMMERTBJGVGXZ2
+  treehouse_root=/tmp/fm-fresh-live-scout/treehouse
+  treehouse_source=/Users/camiloslaptop/.no-mistakes/worktrees/af1f7764a4ae/01M3J77T3FNKZMMERTBJGVGXZ2
+  backend=herdr
+The worker pane visibly reported cwd=/private/tmp/fm-fresh-live-scout/treehouse/... (distinct from project).
+
+PASS: adversarial option guards
+The same live pane rejected:
+  --secondmate --fresh-treehouse
+with: error: --fresh-treehouse applies only to ship and scout spawns
+and rejected:
+  --relaunch --fresh-treehouse
+with: error: --fresh-treehouse cannot override a relaunch; relaunch reuses the recorded allocation
+
+Cleanup: Herdr lab session and disposable lab home were torn down; temporary fresh allocation paths were removed/returned.
