@@ -1602,6 +1602,19 @@ research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
   ' "$mode" "$origin" "$keys" "$STATE"
 }
 
+validate_research_meta() {  # <origin-id> <metadata>
+  local origin=$1 meta=$2 kind report digest
+  kind=$(meta_text_value "$meta" kind)
+  [ "$kind" = "$RESEARCH_KIND" ] || fail "attached origin $origin has an invalid kind=${kind:-missing} record"
+  report=$(meta_text_value "$meta" report)
+  [ "$report" = "data/$origin/report.md" ] || fail "attached origin $origin has an invalid report path"
+  digest=$(meta_text_value "$meta" report_digest)
+  [ "${#digest}" -eq 64 ] || fail "attached origin $origin has an invalid report digest"
+  case "$digest" in
+    *[!0-9a-fA-F]*) fail "attached origin $origin has an invalid report digest" ;;
+  esac
+}
+
 load_origin_meta() {  # <origin-id>
   local origin=$1 live="$STATE/$1.meta" rc
   ORIGIN_META_SOURCE=
@@ -1615,6 +1628,7 @@ load_origin_meta() {  # <origin-id>
     return 0
   fi
   if ORIGIN_META_TEXT=$(research_meta_access snapshot "$origin"); then
+    validate_research_meta "$origin" "$ORIGIN_META_TEXT"
     ORIGIN_META_SOURCE=research
     return 0
   else

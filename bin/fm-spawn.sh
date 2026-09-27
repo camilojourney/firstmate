@@ -4935,10 +4935,6 @@ fi
 # still being delivered, cannot observe or complete a fresh provisional record
 # between its state check and `tasks-axi start`, and a delivery failure cannot
 # follow a committed In-flight transition.
-if [ "$SPAWN_META_LOCK_HELD" = 1 ]; then
-  fm_lock_release "$SPAWN_META_LOCK"
-  SPAWN_META_LOCK_HELD=0
-fi
 if [ "$SPAWN_TREEHOUSE_PROJECT_LOCK_HELD" = 1 ]; then
   SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=0
   fm_lock_release "$SPAWN_TREEHOUSE_PROJECT_LOCK"
