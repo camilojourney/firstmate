@@ -42,6 +42,12 @@
 #   first in the private launch-brief overlay, including the exact task-owned
 #   steering inbox. This never rewrites a project's instruction files or a
 #   secondmate's charter.
+#   --fresh-treehouse is a ship/scout-only exception to shared-pool allocation.
+#   It creates and validates a private per-task Treehouse root, leases a worktree
+#   only after proving the pane's source checkout and destination are distinct,
+#   and records the root and source binding so relaunch and teardown reuse the
+#   same allocation. It refuses on secondmate spawns and cannot override a
+#   relaunch.
 #        fm-spawn.sh <task-id> --relaunch [--harness <name>] [--model <name>] [--effort <level>]
 #   --relaunch launches a replacement agent for an EXISTING task into that
 #   task's own recorded worktree, reusing its recorded endpoint when that

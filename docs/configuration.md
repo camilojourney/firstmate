@@ -416,6 +416,9 @@ For spawn-capable adapters, the runtime session-provider backend controls where 
 | `cmux` | Experimental; no dedicated real-backend CI lane | [`docs/cmux-backend.md`](cmux-backend.md) |
 
 Treehouse remains the worktree provider for tmux, herdr, zellij, and cmux, since herdr, zellij, and cmux are session providers only; Orca provides both the task worktree and terminal endpoint.
+Ship and scout spawns accept `--fresh-treehouse` when an isolated allocation is required instead of reusing the shared Treehouse pool.
+The fresh path creates a private per-task Treehouse root, verifies the source and destination are distinct, leases the worktree to that task, and records the root and source binding in task metadata.
+It is refused for secondmates and relaunches; relaunch instead reuses the recorded allocation.
 
 ### Backend selection order
 
@@ -468,6 +471,8 @@ Task meta records `backend=` only for a non-default backend; an absent `backend=
 
 - A zellij task additionally records `zellij_session=`, `zellij_tab_id=`, and `zellij_pane_id=`.
 - An Orca task additionally records `orca_worktree_id=` and `terminal=`, with `window=fm-<id>` kept as the shared firstmate alias.
+
+- A fresh Treehouse task additionally records `treehouse_root=` and `treehouse_source=` so relaunch and teardown remain bound to its private allocation.
 
 - A cmux task additionally records `cmux_workspace_id=` and `cmux_surface_id=`.
 
