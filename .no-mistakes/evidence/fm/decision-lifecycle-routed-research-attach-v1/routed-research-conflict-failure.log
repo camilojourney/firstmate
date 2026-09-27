@@ -1,0 +1,7 @@
+ASSERTION: a trailing-newline-only reassociation must be refused by name
+EXPECTED: already attached to a different report
+ACTUAL:
+fm-captain-hold: attached origin directory is unsafe: /private/var/folders/0c/gglt88j97vg9yytc3yvr9dnh0000gn/T/fm-captain-hold.B9zA9f/attach-idempotent/state/captain-hold-origins
+fm-captain-hold: report changed or became unsafe while attaching: /private/var/folders/0c/gglt88j97vg9yytc3yvr9dnh0000gn/T/fm-captain-hold.B9zA9f/attach-idempotent/data/sample-idempotent-research/report.md
+
+exit=1

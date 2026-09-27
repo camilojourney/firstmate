@@ -1,0 +1,47 @@
+$ tasks-axi add sample-routed ...
+ok: added sample-routed (scout, repo sample) -> In flight
+task:
+  id: sample-routed
+  title: Sample routed research
+  state: in_flight
+  blocked: no
+  blocked_by: none
+  held: no
+  hold_reason: "-"
+  hold_kind: "-"
+  hold_until: "-"
+  kind: scout
+  repo: sample
+  priority: "-"
+  created: 2026-09-26
+  closed: "-"
+  deps: none
+  links: none
+  body: ""
+help[2]:
+  - Run `tasks-axi done sample-routed --pr <url>` when it ships
+  - Run `tasks-axi block sample-routed --by <other>` to record a dependency
+$ complete before attach
+fm-captain-hold: origin metadata is absent for sample-routed; publish or attach authoritative metadata, then retry complete
+[rc=1]
+$ attach
+attached: sample-routed
+$ complete after attach
+complete: sample-routed captain-call inventory reviewed
+$ verify
+verified: sample-routed captain-call inventory
+$ exact attach retry
+attached: sample-routed (already attached, unchanged)
+$ mutate report with trailing newline and retry attach
+fm-captain-hold: attached origin directory is unsafe: /var/folders/0c/gglt88j97vg9yytc3yvr9dnh0000gn/T//fm-routed-live.SmyH4F/state/captain-hold-origins
+fm-captain-hold: report changed or became unsafe while attaching: /var/folders/0c/gglt88j97vg9yytc3yvr9dnh0000gn/T//fm-routed-live.SmyH4F/data/sample-routed/report.md
+attach-after-mutation [rc=1]
+fm-captain-hold: attached origin directory is unsafe: /var/folders/0c/gglt88j97vg9yytc3yvr9dnh0000gn/T//fm-routed-live.SmyH4F/state/captain-hold-origins
+verify-after-mutation [rc=1]
+$ research metadata
+kind=research
+report=data/sample-routed/report.md
+report_digest=27f6023ee2613222fd4e8b189fffcce41d5f93dd738708b91af6d02c163a5637
+project=sample
+decisions_reviewed=1
+decision_keys=

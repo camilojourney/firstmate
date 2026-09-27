@@ -1,0 +1,11 @@
+ok - attach reproduces and fixes the routed-research completion gap without disturbing the spawned-scout path
+ok - attach rejects missing, empty, symlinked, swapped, malformed, no-backlog-task, and ordinary-metadata inputs without mutation
+ok - attach keeps the canonical report pinned and rejects a swap during metadata-lock wait
+ok - attach, hold, complete, and verify reject cross-home research namespace symlinks
+ok - snapshot, attachment publication, and completion attestation reject namespace replacements
+ok - an attached origin with a genuine unresolved captain call still requires the normal structured decision record
+ok - concurrent first attaches for different origins share directory initialization safely
+ok - complete-first concurrency refuses without mutation and succeeds after retry
+ok - attach-first concurrency publishes before the first completion attests
+
+exit=0

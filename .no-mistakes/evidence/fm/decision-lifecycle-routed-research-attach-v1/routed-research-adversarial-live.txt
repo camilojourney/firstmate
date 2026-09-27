@@ -1,0 +1,9 @@
+$ attach unresolved origin
+attached: open-question
+$ complete --none must refuse
+fm-captain-hold: origin open-question still has open captain decisions in its status stream; hold a captain task for what remains, or answer them, before attesting --none
+[rc=1]
+$ hold the actual captain decision and complete with inventory
+sample-pick-call
+complete: open-question captain-call inventory reviewed (sample-pick-call)
+verified: open-question captain-call inventory
