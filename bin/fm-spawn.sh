@@ -1615,11 +1615,34 @@ if [ "$RELAUNCH" -eq 0 ]; then
   spawn_refuse_if_away_spend_cap
   spawn_require_relocated_queued_work
 fi
+spawn_research_namespace_identity() {
+  perl -e '
+    my ($dir, $meta) = @ARGV;
+    my @st = lstat($dir);
+    if (!@st) { print "absent\n"; exit 0; }
+    exit 1 if -l($dir) || !-d($dir);
+    my @meta_st = lstat($meta);
+    exit 2 if @meta_st && (-l($meta) || !-f($meta));
+    print "$st[0]:$st[1]\n";
+  ' "$STATE/captain-hold-origins" "$STATE/captain-hold-origins/$ID.meta"
+}
+
+spawn_research_namespace_revalidate() {
+  local current
+  current=$(spawn_research_namespace_identity) || return 1
+  [ "$current" = "$SPAWN_RESEARCH_NAMESPACE_ID" ] || return 1
+  [ "$current" = absent ] || { [ ! -e "$SPAWN_RESEARCH_META" ] && [ ! -L "$SPAWN_RESEARCH_META" ]; }
+}
+
 if [ "$RELAUNCH" -eq 0 ]; then
   SPAWN_META_LOCK=$(fm_meta_lock_path "$STATE/$ID.meta") || exit 1
   fm_lock_acquire_wait "$SPAWN_META_LOCK"
   SPAWN_META_LOCK_HELD=1
   SPAWN_RESEARCH_META="$STATE/captain-hold-origins/$ID.meta"
+  SPAWN_RESEARCH_NAMESPACE_ID=$(spawn_research_namespace_identity) || {
+    echo "error: attached research namespace for $ID is unsafe; refusing to publish ordinary spawn metadata" >&2
+    exit 1
+  }
   if [ -e "$SPAWN_RESEARCH_META" ] || [ -L "$SPAWN_RESEARCH_META" ]; then
     if [ ! -f "$SPAWN_RESEARCH_META" ] || [ -L "$SPAWN_RESEARCH_META" ]; then
       echo "error: attached research metadata for $ID is unsafe; refusing to publish ordinary spawn metadata" >&2
@@ -4832,8 +4855,17 @@ preserve_relaunch_meta() {
   exit 1
 }
 if [ "$RELAUNCH" -eq 0 ]; then
+  spawn_research_namespace_revalidate || {
+    echo "error: attached research namespace for $ID changed before ordinary spawn publication; refusing to publish task metadata" >&2
+    exit 1
+  }
   if ! fm_backlog_atomic_transition publish "$SPAWN_META_TMP" "$STATE/$ID.meta" "task record" "$STATE"; then
     echo "error: task record for $ID could not be published ($FM_BACKLOG_TRANSITION_ERROR)" >&2
+    exit 1
+  fi
+  if ! spawn_research_namespace_revalidate; then
+    rm -f -- "$STATE/$ID.meta"
+    echo "error: attached research namespace for $ID changed during ordinary spawn publication; refusing task metadata" >&2
     exit 1
   fi
   SPAWN_META_TMP=

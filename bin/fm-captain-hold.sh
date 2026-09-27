@@ -535,7 +535,7 @@ decode_shown_value() {  # <shown-field>
     \"*\")
       printf '%s' "$value" | perl -MJSON::PP -e '
         local $/;
-        my $value = decode_json(<STDIN>);
+        my $value = JSON::PP->new->utf8->allow_nonref->decode(<STDIN>);
         binmode STDOUT, ":raw";
         utf8::encode($value) if utf8::is_utf8($value);
         print $value;
@@ -1213,7 +1213,7 @@ sanitize_reconcile_provenance() {
 
 command_answers() {
   local origin='' source='' row rest key answer label mode id show state hold_kind body digest legacy_digest legacy_key
-  local recorded_digest recorded_mode tmp err closed=0 skipped=0 reason release_flag tab=$'\t'
+  local recorded_digest recorded_mode tmp err closed=0 skipped=0 reason release_flag resolve_rc tab=$'\t'
   while [ "$#" -gt 0 ]; do
     case "$1" in
       --source) shift; source=${1:-} ;;
@@ -1248,6 +1248,11 @@ command_answers() {
     [ "${#key}" -le 128 ] || continue
     answer=$(sanitize_field "${answer:-}")
     [ -n "$answer" ] || continue
+    if [ "$answer" = reconcile ]; then
+      printf 'skipped: %s (reconcile requires evidence-backed reconciliation)\n' "$key"
+      skipped=$((skipped + 1))
+      continue
+    fi
     label=$(sanitize_field "${label:-}")
     release_flag=''
     case "${mode:-}" in
@@ -1259,7 +1264,12 @@ command_answers() {
         continue
         ;;
     esac
-    if ! id=$(resolve_entry "$origin" "$key" 2>/dev/null); then
+    resolve_rc=0
+    id=$(resolve_entry "$origin" "$key" 2>/dev/null) || resolve_rc=$?
+    if [ "$resolve_rc" -eq 124 ]; then
+      fail "the backlog backend exceeded its read bound resolving $key"
+    fi
+    if [ "$resolve_rc" -ne 0 ]; then
       printf 'skipped: %s (no captain-held task with that id)\n' "$key"
       skipped=$((skipped + 1))
       continue
