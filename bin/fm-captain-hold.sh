@@ -1613,6 +1613,39 @@ validate_research_meta() {  # <origin-id> <metadata>
   case "$digest" in
     *[!0-9a-fA-F]*) fail "attached origin $origin has an invalid report digest" ;;
   esac
+  local actual
+  actual=$(perl -MFcntl=:DEFAULT,:mode -MDigest::SHA -e '
+    my ($data, $report_dir, $report) = @ARGV;
+    my $nofollow = eval { Fcntl::O_NOFOLLOW() };
+    exit 1 if !defined($nofollow);
+    sub identity {
+      my ($path, $kind) = @_;
+      my @st = lstat($path);
+      return if !@st || S_ISLNK($st[2]);
+      return if $kind eq "dir" && !S_ISDIR($st[2]);
+      return if $kind eq "file" && (!S_ISREG($st[2]) || !$st[7]);
+      return join(":", @st[0, 1, 2, 3, 7, 9, 10]);
+    }
+    my $data_id = identity($data, "dir");
+    my $dir_id = identity($report_dir, "dir");
+    my $path_id = identity($report, "file");
+    exit 1 if !defined($data_id) || !defined($dir_id) || !defined($path_id);
+    sysopen(my $fh, $report, O_RDONLY | $nofollow) or exit 1;
+    binmode($fh);
+    my @fd = stat($fh);
+    exit 1 if !@fd || !S_ISREG($fd[2]) || !$fd[7]
+      || join(":", @fd[0, 1, 2, 3, 7, 9, 10]) ne $path_id;
+    my $digest = Digest::SHA->new(256)->addfile($fh)->hexdigest;
+    my $data_after = identity($data, "dir");
+    my $dir_after = identity($report_dir, "dir");
+    my $path_after = identity($report, "file");
+    exit 1 if !defined($data_after) || $data_after ne $data_id
+      || !defined($dir_after) || $dir_after ne $dir_id
+      || !defined($path_after) || $path_after ne $path_id;
+    print $digest;
+  ' "$DATA" "$DATA/$origin" "$DATA/$origin/report.md") \
+    || fail "attached origin $origin has an unsafe or unreadable canonical report"
+  [ "$actual" = "$digest" ] || fail "attached origin $origin report digest does not match its canonical report"
 }
 
 load_origin_meta() {  # <origin-id>
