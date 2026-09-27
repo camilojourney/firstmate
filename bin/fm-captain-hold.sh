@@ -27,8 +27,13 @@
 #   fm-captain-hold.sh unbind <source-id>
 #   fm-captain-hold.sh binding <source-id>
 #   fm-captain-hold.sh complete <origin-id> (--none | <task-id>...)
+#   fm-captain-hold.sh reconcile-requests --source-id <source-id> --source <provenance>   (task ids on stdin)
 #   fm-captain-hold.sh verify <origin-id>
 #   fm-captain-hold.sh attach <origin-id>
+#   fm-captain-hold.sh open <task-id> [--identity] [--distinguish-absent]
+#   fm-captain-hold.sh reconcile list
+#   fm-captain-hold.sh reconcile close <task-id> --evidence-file <path>
+#   fm-captain-hold.sh reconcile note <task-id> --note-file <path>
 #   fm-captain-hold.sh diverged
 #
 # `hold` places an existing task under an active captain hold, or creates the
@@ -1215,6 +1220,218 @@ command_attach_pinned() {
   printf 'attached: %s\n' "$origin"
 }
 
+command_reconcile_requests() {
+  local source_id='' source='' origin row id note provenance show show_status=0 created=0 skipped=0 tab=$'\t'
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --source-id) shift; source_id=${1:-} ;;
+      --source) shift; source=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_source_id "$source_id"
+  [ -n "$source" ] || fail "--source provenance is required"
+  origin=$(read_binding "$source_id") || fail "cannot verify the binding for source $source_id"
+  [ -n "$origin" ] || fail "source $source_id is not bound; no reconcile requests were created"
+  require_tasks_axi
+  while IFS= read -r row; do
+    id=${row%%"$tab"*}
+    note=''
+    case "$row" in *"$tab"*) note=${row#*"$tab"} ;; esac
+    [ -n "$id" ] || continue
+    case "$id" in
+      *[!A-Za-z0-9._-]*) printf 'refused: %s (invalid task id)\n' "$id"; skipped=$((skipped + 1)); continue ;;
+    esac
+    [ "${#id}" -le 128 ] \
+      || { printf 'refused: %s (task id is too long)\n' "$id"; skipped=$((skipped + 1)); continue; }
+    acquire_task_control_lock "$id"
+    show_status=0
+    show=''
+    task_show "$id" || show_status=$?
+    [ "$show_status" -ne 0 ] || show=$TASK_SHOW_OUTPUT
+    if [ "$show_status" -eq 124 ]; then
+      fail "the backlog backend exceeded its read bound reading $id"
+    fi
+    if [ -z "$show" ]; then
+      printf 'refused: %s (absent)\n' "$id"
+      skipped=$((skipped + 1))
+    elif [ "$(show_field "$show" state)" = "done" ]; then
+      printf 'refused: %s (already closed)\n' "$id"
+      skipped=$((skipped + 1))
+    elif [ "$(show_field_value "$show" hold_kind)" != captain ]; then
+      printf 'refused: %s (not held for the captain)\n' "$id"
+      skipped=$((skipped + 1))
+    else
+      provenance=$source
+      [ -z "$note" ] || provenance="$source; captain note: $(sanitize_field "$note")"
+      if reconcile_request_record "$id" "$provenance"; then
+        printf 'reconcile: %s\n' "$id"
+        created=$((created + 1))
+      else
+        printf 'refused: %s (cannot record the reconcile request)\n' "$id"
+        skipped=$((skipped + 1))
+      fi
+    fi
+    release_task_control_lock || fail "cannot release task control for $id"
+  done
+  printf 'reconcile-requests: created=%s skipped=%s\n' "$created" "$skipped"
+  [ "$skipped" -eq 0 ]
+}
+
+command_reconcile() {
+  local action=${1:-}
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  case "$action" in
+    list)    reconcile_list "$@" ;;
+    close)   reconcile_close "$@" ;;
+    note)    reconcile_note "$@" ;;
+    *) usage >&2; exit 2 ;;
+  esac
+}
+
+reconcile_list() {
+  local path id count=0
+  [ "$#" -eq 0 ] || { usage >&2; exit 2; }
+  [ -d "$RECONCILE_DIR" ] || { printf 'reconcile-requests: 0\n'; return 0; }
+  for path in "$RECONCILE_DIR"/*.request; do
+    [ -e "$path" ] || continue
+    id=${path##*/}; id=${id%.request}
+    RECONCILE_REQUESTED=''
+    RECONCILE_SOURCE=''
+    reconcile_request_read "$id" || continue
+    printf '%s\trequested=%s\tsource=%s\n' "$id" "$RECONCILE_REQUESTED" "$RECONCILE_SOURCE"
+    count=$((count + 1))
+  done
+  printf 'reconcile-requests: %s\n' "$count"
+}
+
+# The moot outcome. The evidence is what closes the call, and the `reconciled`
+# resolution mode is what keeps the record from claiming the captain answered.
+reconcile_close() {
+  local id=${1:-} evidence_file='' show state hold_kind body occurrence recorded_mode
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --evidence-file) shift; evidence_file=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_slug task-id "$id"
+  [ -n "$evidence_file" ] || fail "--evidence-file is required; a moot call closes on evidence, never on assertion"
+  load_decision "$evidence_file"
+  acquire_task_control_lock "$id"
+  reconcile_request_read "$id" \
+    || fail "task $id has no pending board-created reconcile request"
+  require_tasks_axi
+  task_show_or_fail "$id" "captain-held task $id is absent from this home's configured backlog (data directory $DATA)"
+  state=$(show_field "$show" state)
+  hold_kind=$(show_field_value "$show" hold_kind)
+  body=$(show_field "$show" body)
+  occurrence=$(( $(resolution_record_count "$body") + 1 ))
+  if [ "$state" = "done" ]; then
+    # An exact retry finishes an interrupted close and stays idempotent; a
+    # different evidence text on an already closed call is refused.
+    body_has_resolution_record "$body" \
+      || fail "task $id is already closed with no resolution record; use answer to record what closed it"
+    [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ] \
+      || fail "task $id records a different resolution; it cannot be reconciled again"
+    [ "$(recorded_resolution_mode "$body" || true)" = reconciled ] \
+      || fail "task $id was not closed by reconciliation"
+    occurrence=$(resolution_record_count "$body")
+    remove_interrupted_answer_stamp "$id"
+    publish_parent_hold "$id" "$occurrence" resolved reconciled
+    [ "$PARENT_HOLD_PUBLISHED" = 1 ] \
+      || fail "could not publish the reconciled captain-held task $id to its parent"
+    reconcile_request_retire "$id"
+    printf 'reconciled: %s\n' "$id"
+    return 0
+  fi
+  [ "$hold_kind" = captain ] \
+    || fail "task $id is not held for the captain; there is no captain call to reconcile"
+  if body_has_resolution_record "$body" \
+    && [ "$(recorded_decision_digest "$body" || true)" = "$DECISION_DIGEST" ]; then
+    recorded_mode=$(recorded_resolution_mode "$body" || true)
+    [ "$recorded_mode" = reconciled ] \
+      || fail "task $id records this resolution with mode ${recorded_mode:-unknown}; it is not a reconciliation retry"
+    occurrence=$(resolution_record_count "$body")
+  else
+    write_resolution_record "$id" reconciled "$body"
+  fi
+  close_answered "$id" 0 || fail "could not close reconciled captain-held task $id"
+  remove_interrupted_answer_stamp "$id"
+  task_show_or_fail "$id" "task $id disappeared after closing"
+  body_has_resolution_record "$(show_field "$show" body)" \
+    || fail "captain-held task $id did not retain its durable resolution record"
+  publish_parent_hold "$id" "$occurrence" resolved reconciled
+  [ "$PARENT_HOLD_PUBLISHED" = 1 ] \
+    || fail "could not publish the reconciled captain-held task $id to its parent"
+  reconcile_request_retire "$id"
+  printf 'reconciled: %s\n' "$id"
+}
+
+# The still-active outcome. The hold survives, so the call stays the captain's
+# and stays on Captain's Call, now carrying what the re-check found.
+reconcile_note() {
+  local id=${1:-} note_file='' note show body stamp tmp note_digest marker
+  [ "$#" -ge 1 ] || { usage >&2; exit 2; }
+  shift
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --note-file) shift; note_file=${1:-} ;;
+      *) usage >&2; exit 2 ;;
+    esac
+    shift
+  done
+  validate_slug task-id "$id"
+  [ -n "$note_file" ] || fail "--note-file is required; leaving a call open records what the re-check found"
+  [ -f "$note_file" ] || fail "note file does not exist: $note_file"
+  note=$(cat "$note_file")
+  [ -n "$note" ] || fail "note file must not be empty"
+  [ "$(printf '%s' "$note" | LC_ALL=C wc -c | tr -d ' ')" -le 8192 ] \
+    || fail "note file exceeds 8192 bytes"
+  acquire_task_control_lock "$id"
+  reconcile_request_read "$id" \
+    || fail "task $id has no pending board-created reconcile request"
+  require_tasks_axi
+  command_open "$id" \
+    || fail "task $id is not an open captain call; a note cannot keep a closed call open"
+  task_show_or_fail "$id" "captain-held task $id is absent from this home's configured backlog (data directory $DATA)"
+  body=$(decode_shown_value "$(show_field "$show" body)") \
+    || fail "could not decode the existing body for $id"
+  note_digest=$(sha256_text "$note")
+  marker="Reconcile request: $RECONCILE_REQUESTED | $RECONCILE_SOURCE | note digest: $note_digest"
+  case "$body" in
+    *"$marker"*)
+      reconcile_request_retire "$id" \
+        || fail "could not retire the applied reconcile request for $id"
+      command_open "$id" || fail "recording the reconcile note released captain-held task $id"
+      printf 'still-open: %s\n' "$id"
+      return 0
+      ;;
+  esac
+  stamp=${FM_CAPTAIN_HOLD_NOW:-$(date -u +%Y-%m-%dT%H:%M:%SZ)}
+  tmp=$(umask 077; mktemp "${TMPDIR:-/tmp}/fm-captain-hold-note.XXXXXX") \
+    || fail "cannot stage the reconcile note"
+  if ! printf '%s\n\nCaptain hold reconciled: %s\n%s\n%s\n' "$body" "$stamp" "$marker" "$note" > "$tmp"; then
+    rm -f -- "$tmp"
+    fail "cannot stage the reconcile note for $id"
+  fi
+  if ! tasks_axi update "$id" --body-file "$tmp" --archive-body >/dev/null; then
+    rm -f -- "$tmp"
+    fail "could not record the reconcile note on $id"
+  fi
+  rm -f -- "$tmp"
+  reconcile_request_retire "$id" \
+    || fail "could not retire the applied reconcile request for $id"
+  command_open "$id" || fail "recording the reconcile note released captain-held task $id"
+  printf 'still-open: %s\n' "$id"
+}
+
+
 command_complete() {
   local origin=${1:-} meta lock_meta previous='' supplied='' keys='' entry key status_file open raw_open transfer_rc
   [ "$#" -ge 2 ] || { usage >&2; exit 2; }
@@ -1435,6 +1652,73 @@ EOF
   done
 }
 
+command_open() {  # <task-id> [--identity] [--distinguish-absent]
+  local id='' identity=0 distinguish_absent=0 data state root file backend show shown_body
+  while [ "$#" -gt 0 ]; do
+    case "$1" in
+      --identity) identity=1 ;;
+      --distinguish-absent) distinguish_absent=1 ;;
+      -*) usage >&2; exit 2 ;;
+      *)
+        [ -z "$id" ] || { usage >&2; exit 2; }
+        id=$1
+        ;;
+    esac
+    shift
+  done
+  case "$id" in
+    ''|*[!A-Za-z0-9._-]*)
+      printf 'fm-captain-hold: task id must be a non-empty privacy-safe slug: %s\n' "$id" >&2
+      exit 2
+      ;;
+  esac
+  data=$(fm_backlog_data_absolute "$DATA") \
+    || { printf 'fm-captain-hold: data directory cannot be resolved: %s\n' "$DATA" >&2; exit 2; }
+  root=$(fm_backlog_root "$data") \
+    || { printf 'fm-captain-hold: %s\n' "$FM_BACKLOG_TRANSITION_ERROR" >&2; exit 2; }
+  if ! backend=$(fm_tasks_axi_backend_resolve "$root"); then
+    exit 2
+  fi
+  if [ "$backend" = markdown ]; then
+    file=$(fm_backlog_file "$data") \
+      || { printf 'fm-captain-hold: %s\n' "$FM_BACKLOG_TRANSITION_ERROR" >&2; exit 2; }
+    if [ ! -e "$file" ] && [ ! -L "$file" ]; then
+      # No backlog file at all: this home records no captain calls, so the task
+      # is absent from it rather than held. A record that EXISTS but cannot be
+      # read is a different state and still leaves by the exit 2 paths below,
+      # because that one may hide a live hold.
+      [ "$distinguish_absent" = 0 ] || return 3
+      return 1
+    fi
+  fi
+  fm_tasks_axi_compatible || { printf 'fm-captain-hold: compatible tasks-axi is required\n' >&2; exit 2; }
+  if fm_backlog_row_probe "$data" "$id"; then
+    state=${FM_BACKLOG_ROW_STATE%% *}
+    if [ "$state" != "done" ] && [ "$FM_BACKLOG_ROW_HOLD_KIND" = captain ]; then
+      if [ "$identity" -eq 1 ]; then
+        task_show "$id" || {
+          printf 'fm-captain-hold: captain call %s is open but its record could not be read\n' "$id" >&2
+          exit 2
+        }
+        show=$TASK_SHOW_OUTPUT
+        shown_body=$(show_field "$show" body)
+        printf '%s#%s\n' \
+          "$(body_hold_set_timestamp "$(decode_shown_value "$shown_body")")" \
+          "$(resolution_record_count "$shown_body")"
+      fi
+      return 0
+    fi
+    return 1
+  fi
+  if [ "$FM_BACKLOG_ROW_RESULT" = not_found ]; then
+    [ "$distinguish_absent" = 0 ] || return 3
+    return 1
+  fi
+  printf 'fm-captain-hold: %s\n' "$FM_BACKLOG_ROW_ERROR" >&2
+  exit 2
+}
+
+
 case "${1:-}" in
   hold) shift; command_hold "$@" ;;
   answer) shift; command_answer "$@" ;;
@@ -1442,11 +1726,14 @@ case "${1:-}" in
   bind) shift; command_bind "$@" ;;
   unbind) shift; command_unbind "$@" ;;
   binding) shift; command_binding "$@" ;;
+  reconcile-requests) shift; command_reconcile_requests "$@" ;;
   complete) shift; command_complete "$@" ;;
   verify) shift; command_verify "$@" ;;
   attach) shift; command_attach "$@" ;;
   __attach-pinned) shift; command_attach_pinned "$@" ;;
+  open) shift; command_open "$@" ;;
   diverged) shift; command_diverged "$@" ;;
+  reconcile) shift; command_reconcile "$@" ;;
   -h|--help) usage ;;
   *) usage >&2; exit 2 ;;
 esac

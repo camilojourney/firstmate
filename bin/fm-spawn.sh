@@ -4911,7 +4911,6 @@ if [ "$SPAWN_TREEHOUSE_PROJECT_LOCK_HELD" = 1 ]; then
   SPAWN_TREEHOUSE_PROJECT_LOCK_HELD=0
   fm_lock_release "$SPAWN_TREEHOUSE_PROJECT_LOCK"
 fi
-fi
 if [ "$SPAWN_TASK_SET_LOCK_HELD" = 1 ]; then
   # The record is published, so this task is now part of the set a teardown
   # enumerates and locks per task. The set lock is only needed across that
