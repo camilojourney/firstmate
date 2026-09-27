@@ -4184,6 +4184,10 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
         exit 1
       }
     fi
+    FRESH_TREEHOUSE_ROOT=$(CDPATH='' cd -- "$FRESH_TREEHOUSE_ROOT" && pwd -P) || {
+      echo "error: could not resolve the private fresh Treehouse root $FRESH_TREEHOUSE_ROOT" >&2
+      exit 1
+    }
     fresh_source=$(shell_quote "$PROJ_ABS_REAL")
     fresh_root=$(shell_quote "$FRESH_TREEHOUSE_ROOT")
     fresh_holder=$(shell_quote "$ID")
@@ -4237,7 +4241,11 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
       p_real=$(real_path_or_raw "$p")
       last_reason="it is an isolated worktree, but no second read agreed with it"
       if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
-        WT="$p"
+        if [ "$FRESH_TREEHOUSE" -eq 1 ]; then
+          WT="$p_real"
+        else
+          WT="$p"
+        fi
         break
       fi
       candidate="$p_real"
