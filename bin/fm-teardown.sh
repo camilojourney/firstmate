@@ -1113,6 +1113,20 @@ PR_URL=$(grep '^pr=' "$META" | tail -1 | cut -d= -f2- || true)
 # tasktmp is recorded by fm-spawn for tasks that set up a per-task temp root
 # (/tmp/fm-<id>/); absent for tasks spawned before that change, so tolerate empty.
 TASK_TMP=$(grep '^tasktmp=' "$META" | cut -d= -f2- || true)
+TREEHOUSE_ROOT=$(grep '^treehouse_root=' "$META" | cut -d= -f2- || true)
+TREEHOUSE_SOURCE=$(grep '^treehouse_source=' "$META" | cut -d= -f2- || true)
+if [ -n "$TREEHOUSE_ROOT" ]; then
+  treehouse_source_real=$(CDPATH='' cd -- "$PROJ" 2>/dev/null && pwd -P || true)
+  treehouse_root_real=$(CDPATH='' cd -- "$TREEHOUSE_ROOT" 2>/dev/null && pwd -P || true)
+  case "$TREEHOUSE_ROOT" in
+    /*) ;;
+    *) echo "REFUSED: task $ID has a non-absolute fresh Treehouse root; nothing was changed" >&2; exit 1 ;;
+  esac
+  [ -n "$treehouse_root_real" ] && [ "$treehouse_source_real" = "$TREEHOUSE_SOURCE" ] || {
+    echo "REFUSED: task $ID's fresh Treehouse source or root binding is ambiguous; nothing was changed" >&2
+    exit 1
+  }
+fi
 BUSY_GEN=$(fm_meta_get "$META" busy_gen)
 if [ -z "$BUSY_GEN" ]; then
   BUSY_GEN=$(cat "$STATE/$ID.busy-gen" 2>/dev/null || true)
@@ -1772,12 +1786,23 @@ cleanup_stale_lock_for_safety_check() {
 # Return a worktree/home via `treehouse return --force`, tolerating a transient or
 # stale git index.lock left by a killed crew process. See the script header.
 teardown_treehouse_return() {
-  local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-}
+  local dir=$1 cd_dir=$2 label=$3 post_cleanup_check=${4:-} treehouse_root=${5:-} lease_holder=${6:-}
   local out lock attempt=0 max_retries lock_desc
+  treehouse_return() {
+    if [ -n "$treehouse_root" ]; then
+      if [ -n "$lease_holder" ]; then
+        treehouse --root "$treehouse_root" return --force --if-lease-holder "$lease_holder" "$dir"
+      else
+        treehouse --root "$treehouse_root" return --force "$dir"
+      fi
+    else
+      treehouse return --force "$dir"
+    fi
+  }
 
   # Capture stdout+stderr so non-lock failures stay visible and lock failures can
   # be matched by signature even when the lock file is already gone mid-check.
-  if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+  if out=$( ( cd "$cd_dir" && treehouse_return ) 2>&1 ); then
     [ -n "$out" ] && printf '%s\n' "$out"
     return 0
   fi
@@ -1802,7 +1827,7 @@ teardown_treehouse_return() {
     echo "teardown: $label return failed with transient git lock ($lock_desc); waiting ${TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS}s and retrying ($attempt/${max_retries})" >&2
     sleep "$TREEHOUSE_RETURN_LOCK_RETRY_WAIT_SECS"
 
-    if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+    if out=$( ( cd "$cd_dir" && treehouse_return ) 2>&1 ); then
       [ -n "$out" ] && printf '%s\n' "$out"
       echo "teardown: $label return succeeded on retry; lock cleared on its own" >&2
       return 0
@@ -1829,7 +1854,7 @@ teardown_treehouse_return() {
           return 1
         fi
       fi
-      if out=$( ( cd "$cd_dir" && treehouse return --force "$dir" ) 2>&1 ); then
+      if out=$( ( cd "$cd_dir" && treehouse_return ) 2>&1 ); then
         [ -n "$out" ] && printf '%s\n' "$out"
         echo "teardown: $label return succeeded after stale-lock cleanup" >&2
         return 0
@@ -3587,7 +3612,7 @@ elif [ -d "$WT" ] && [ "$KIND" != secondmate ]; then
   if [ "$FORCE" != "--force" ] && [ "$KIND" != scout ] && [ "$KIND" != secondmate ]; then
     post_lock_cleanup_check=validate_worktree_teardown_safety
   fi
-  teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" || {
+  teardown_treehouse_return "$WT" "$PROJ" "worktree" "$post_lock_cleanup_check" "$TREEHOUSE_ROOT" "$ID" || {
     echo "error: treehouse return failed for worktree $WT; teardown aborted" >&2
     exit 1
   }

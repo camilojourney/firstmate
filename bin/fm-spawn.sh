@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Spawn a direct report: a crewmate in a treehouse or Orca worktree, or a
 # secondmate in its isolated firstmate home.
-# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--branch-prefix <prefix>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
+# Usage: fm-spawn.sh <task-id> <project-dir> --mode <no-mistakes|direct-PR|local-only> --yolo <on|off> [--fresh-treehouse] [--branch-prefix <prefix>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> <project-dir> --scout [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>]
 #        fm-spawn.sh <task-id> [<firstmate-home>] [--harness <name>|harness|launch-command] [--model <name>] [--effort <level>] [--backend <name>] --secondmate
 #   --mode and --yolo are this task's delivery contract, REQUIRED for every ship
@@ -648,6 +648,7 @@ YOLO_SET=0
 BRANCH_PREFIX_SET=0
 TRACEPARENT_SET=0
 RELAUNCH=0
+FRESH_TREEHOUSE=0
 POS=()
 want_value=
 for a in "$@"; do
@@ -709,6 +710,7 @@ for a in "$@"; do
     KIND_SET=1
     ;;
   --relaunch) RELAUNCH=1 ;;
+  --fresh-treehouse) FRESH_TREEHOUSE=1 ;;
   --harness) want_value=harness ;;
   --harness=*)
     HARNESS_ARG=${a#--harness=}
@@ -804,6 +806,15 @@ case "$EFFORT" in
   exit 1
   ;;
 esac
+
+if [ "$FRESH_TREEHOUSE" -eq 1 ] && [ "$KIND" = secondmate ]; then
+  echo "error: --fresh-treehouse applies only to ship and scout spawns" >&2
+  exit 1
+fi
+if [ "$FRESH_TREEHOUSE" -eq 1 ] && [ "$RELAUNCH" -eq 1 ]; then
+  echo "error: --fresh-treehouse cannot override a relaunch; relaunch reuses the recorded allocation" >&2
+  exit 1
+fi
 
 # --relaunch reuses an existing task's endpoint, worktree, project, and kind,
 # so every axis this block resolves for a fresh spawn instead comes from that
@@ -1199,6 +1210,7 @@ CONFIG_INHERIT_LOCK_HELD=0
 GIT_HOOKS_DIR=
 SPAWN_LAUNCH_SENT=0
 SPAWN_ENDPOINT_CLOSED=0
+FRESH_TREEHOUSE_ROOT=${FRESH_TREEHOUSE_ROOT:-}
 
 spawn_fresh_commit_rollback() {
   if fm_backlog_atomic_transition rollback "$STATE/$ID.meta" \
@@ -1323,6 +1335,15 @@ spawn_abort_cleanup() {
   if [ "$SPAWN_META_LOCK_HELD" = 1 ]; then
     SPAWN_META_LOCK_HELD=0
     fm_lock_release "$SPAWN_META_LOCK" || true
+  fi
+  # A fresh leased allocation has no shared-pool successor. If launch aborts
+  # before metadata publication, release only the lease held by this task and
+  # only from its recorded private root.
+  if [ -n "${FRESH_TREEHOUSE_ROOT:-}" ] && [ -n "${WT:-}" ] &&
+    [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ] &&
+    [ -d "$FRESH_TREEHOUSE_ROOT" ]; then
+    treehouse --root "$FRESH_TREEHOUSE_ROOT" return --force --if-lease-holder "$ID" "$WT" >/dev/null 2>&1 ||
+      echo "warning: could not release fresh Treehouse allocation for aborted task $ID; preserving it for guarded cleanup" >&2
   fi
   # A spawn that aborts after claiming its slot but before its record survives
   # must not leave a claim naming a task no record describes. The release is a
@@ -1456,6 +1477,7 @@ if [ "${#POS[@]}" -gt 0 ] && [ "${POS[0]}" != "$idpart" ] && case "$idpart" in *
   [ "$MODE_SET" -eq 0 ] || shared_args+=(--mode "$MODE")
   [ "$YOLO_SET" -eq 0 ] || shared_args+=(--yolo "$YOLO")
   [ "$BRANCH_PREFIX_SET" -eq 0 ] || shared_args+=(--branch-prefix "$BRANCH_PREFIX")
+  [ "$FRESH_TREEHOUSE" -eq 0 ] || shared_args+=(--fresh-treehouse)
   for pair in "${POS[@]}"; do
     case "$pair" in
     *=*) : ;;
@@ -1780,6 +1802,8 @@ if [ "$RELAUNCH" -eq 1 ]; then
     fi
   fi
   RELAUNCH_WT=$(fm_meta_get "$RELAUNCH_META" worktree)
+  FRESH_TREEHOUSE_ROOT=$(fm_meta_get "$RELAUNCH_META" treehouse_root)
+  [ -z "$FRESH_TREEHOUSE_ROOT" ] || FRESH_TREEHOUSE=1
   [ -n "$RELAUNCH_WT" ] && [ -d "$RELAUNCH_WT" ] || {
     echo "error: task $ID's recorded worktree '${RELAUNCH_WT:-none}' is missing; refusing to relaunch without the local copy its work lives in" >&2
     exit 1
@@ -4127,7 +4151,43 @@ if [ "$RELAUNCH" -eq 1 ]; then
   fi
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
-  spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  if [ "$FRESH_TREEHOUSE" -eq 1 ]; then
+    # Fresh allocation is isolated to this task's private Treehouse root.
+    # Verify the source identity in the pane and the destination identity before
+    # accepting it, so no existing pool copy can be reset or borrowed.
+    TASK_TMP="/tmp/fm-$ID"
+    if ! (umask 077 && mkdir "$TASK_TMP") 2>/dev/null; then
+      if [ -L "$TASK_TMP" ] || [ ! -d "$TASK_TMP" ] || [ ! -O "$TASK_TMP" ] ||
+        [ -n "$(find "$TASK_TMP" -prune \( -perm -g=w -o -perm -o=w \) -print 2>/dev/null)" ] ||
+        ! chmod 700 "$TASK_TMP"; then
+        echo "error: task temp root $TASK_TMP is not a private directory owned by this user; refusing fresh Treehouse allocation" >&2
+        exit 1
+      fi
+    fi
+    FRESH_TREEHOUSE_ROOT=${FRESH_TREEHOUSE_ROOT:-$TASK_TMP/treehouse}
+    if [ -e "$FRESH_TREEHOUSE_ROOT" ] || [ -L "$FRESH_TREEHOUSE_ROOT" ]; then
+      if [ -L "$FRESH_TREEHOUSE_ROOT" ] || [ ! -d "$FRESH_TREEHOUSE_ROOT" ] ||
+        [ ! -O "$FRESH_TREEHOUSE_ROOT" ] ||
+        [ -n "$(find "$FRESH_TREEHOUSE_ROOT" -prune \( -perm -g=w -o -perm -o=w \) -print 2>/dev/null)" ]; then
+        echo "error: fresh Treehouse root $FRESH_TREEHOUSE_ROOT is not a private directory owned by this user; refusing allocation" >&2
+        exit 1
+      fi
+    else
+      mkdir -p "$FRESH_TREEHOUSE_ROOT" || {
+        echo "error: could not create the private fresh Treehouse root $FRESH_TREEHOUSE_ROOT" >&2
+        exit 1
+      }
+    fi
+    fresh_source=$(shell_quote "$PROJ_ABS_REAL")
+    fresh_root=$(shell_quote "$FRESH_TREEHOUSE_ROOT")
+    fresh_holder=$(shell_quote "$ID")
+    spawn_send_text_line "$WT_TARGET" "cd -- $fresh_source && test \"\\$(git rev-parse --show-toplevel)\" = $fresh_source && fresh_wt=\\$(treehouse --root $fresh_root get --lease --lease-holder $fresh_holder) && test -n \"\\$fresh_wt\" && test \"\\$(cd -- \"\\$fresh_wt\" && pwd -P)\" != $fresh_source && cd -- \"\\$fresh_wt\"" || {
+      echo "error: fresh Treehouse allocation command could not be delivered; refusing to launch" >&2
+      exit 1
+    }
+  else
+    spawn_send_text_line "$WT_TARGET" 'treehouse get'
+  fi
 
   # Wait for the treehouse subshell: the pane's cwd moves from the project to the worktree.
   # Target the stable window id, not the name: if the name is ever lost (e.g. an
@@ -4761,7 +4821,7 @@ SPAWN_META_PATH=$SPAWN_META_TMP
 preserve_relaunch_meta() {
   awk -F= '
     BEGIN {
-      split("window endpoint_task_id worktree project harness kind mode yolo branch tasktmp model effort account account_provider busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
+      split("window endpoint_task_id worktree project treehouse_root treehouse_source harness kind mode yolo branch tasktmp model effort account account_provider busy_gen spawn_gen traceparent backend herdr_session herdr_workspace_id herdr_tab_id herdr_pane_id zellij_session zellij_tab_id zellij_pane_id orca_worktree_id terminal cmux_workspace_id cmux_surface_id home projects control_relaunch_tx", keys, " ")
       for (i in keys) owned[keys[i]] = 1
     }
     !($1 in owned)
@@ -4772,6 +4832,8 @@ preserve_relaunch_meta() {
   echo "endpoint_task_id=$ID"
   echo "worktree=$WT"
   echo "project=$PROJ_ABS"
+  [ -z "${FRESH_TREEHOUSE_ROOT:-}" ] || echo "treehouse_root=$FRESH_TREEHOUSE_ROOT"
+  [ -z "${FRESH_TREEHOUSE_ROOT:-}" ] || echo "treehouse_source=$PROJ_ABS_REAL"
   echo "harness=$HARNESS"
   echo "kind=$KIND"
   [ -z "$MODE" ] || echo "mode=$MODE"
