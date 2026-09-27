@@ -1488,9 +1488,12 @@ research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
     use strict;
     use warnings;
 
-    my ($mode, $origin, $keys, $state) = @ARGV;
+    my ($mode, $origin, $keys, $state, $data) = @ARGV;
     $state = File::Spec->rel2abs($state);
+    $data = File::Spec->rel2abs($data);
     my $research_state = "$state/captain-hold-origins";
+    my $report_dir = "$data/$origin";
+    my $report_path = "$report_dir/report.md";
     my $meta_path = "$research_state/$origin.meta";
     my $nofollow = eval { Fcntl::O_NOFOLLOW() };
     my $directory = eval { Fcntl::O_DIRECTORY() };
@@ -1561,11 +1564,36 @@ research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
     local $/;
     my $content = <$meta_fh>;
     $content = "" if !defined($content);
-    exit 2 if !$identities_valid->();
+    my ($kind) = $content =~ /^kind=([^\n]*)$/m;
+    my ($report) = $content =~ /^report=([^\n]*)$/m;
+    my ($recorded_digest) = $content =~ /^report_digest=([^\n]*)$/m;
+    exit 2 if !defined($kind) || $kind ne "research"
+      || !defined($report) || $report ne "data/$origin/report.md"
+      || !defined($recorded_digest) || $recorded_digest !~ /^[0-9a-fA-F]{64}$/;
+    sysopen(my $report_fh, $report_path, O_RDONLY | $nofollow) or exit 2;
+    binmode($report_fh);
+    my $report_identity = fd_identity($report_fh, "file");
+    exit 2 if !defined($report_identity) || !defined(path_identity($data, "dir"))
+      || !defined(path_identity($report_dir, "dir"))
+      || !defined(path_identity($report_path, "file"))
+      || path_identity($report_path, "file") ne $report_identity;
+    my $current_digest = Digest::SHA->new(256)->addfile($report_fh)->hexdigest;
+    exit 2 if $current_digest ne $recorded_digest;
+    my $reports_valid = sub {
+      return 0 if !defined(fd_identity($report_fh, "file")) || fd_identity($report_fh, "file") ne $report_identity;
+      return 0 if !defined(path_identity($data, "dir"))
+        || !defined(path_identity($report_dir, "dir"))
+        || !defined(path_identity($report_path, "file"))
+        || path_identity($report_path, "file") ne $report_identity;
+      seek($report_fh, 0, 0) or return 0;
+      my $digest = Digest::SHA->new(256)->addfile($report_fh)->hexdigest;
+      return $digest eq $recorded_digest;
+    };
+    exit 2 if !$identities_valid->() || !$reports_valid->();
     if ($mode eq "snapshot") {
       binmode(STDOUT);
       print $content or exit 2;
-      exit 2 if !$identities_valid->();
+      exit 2 if !$identities_valid->() || !$reports_valid->();
       exit 0;
     }
     exit 2 if $mode ne "attest";
@@ -1575,7 +1603,7 @@ research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
     my $staged_inode = fd_inode_identity($tmp_fh);
     exit 2 if !defined($staged_inode);
     close($tmp_fh) or exit 2;
-    exit 2 if !$identities_valid->();
+    exit 2 if !$identities_valid->() || !$reports_valid->();
     my ($backup_fh, $backup_name) = tempfile(".$origin.meta.complete-backup.XXXXXX", DIR => ".", UNLINK => 1);
     close($backup_fh) or exit 2;
     unlink($backup_name) or exit 2;
@@ -1589,7 +1617,8 @@ research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
       && defined(fd_identity($research_fh, "dir")) && fd_identity($research_fh, "dir") eq $research_identity
       && defined(path_identity($state, "dir")) && path_identity($state, "dir") eq $state_identity
       && defined(path_identity($research_state, "dir"))
-      && path_identity($research_state, "dir") eq $research_identity;
+      && path_identity($research_state, "dir") eq $research_identity
+      && $reports_valid->();
     if (!$published_safely) {
       if (defined($published_here) && $published_here eq $staged_inode) {
         rename($backup_name, "$origin.meta") or exit 2;
@@ -1599,7 +1628,7 @@ research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
       exit 2;
     }
     unlink($backup_name) or exit 2;
-  ' "$mode" "$origin" "$keys" "$STATE"
+  ' "$mode" "$origin" "$keys" "$STATE" "$DATA"
 }
 
 validate_research_meta() {  # <origin-id> <metadata>
@@ -2084,6 +2113,10 @@ EOF
 $raw_open
 EOF
   fi
+  if [ "$ORIGIN_META_SOURCE" = research ]; then
+    research_meta_access snapshot "$origin" >/dev/null \
+      || fail "attached origin report changed or became unsafe during completion: $RESEARCH_STATE"
+  fi
   printf 'complete: %s captain-call inventory reviewed%s\n' "$origin" "${keys:+ ($keys)}"
 }
 
@@ -2112,6 +2145,10 @@ EOF
   done <<EOF
 $open
 EOF
+  if [ "$ORIGIN_META_SOURCE" = research ]; then
+    research_meta_access snapshot "$origin" >/dev/null \
+      || fail "attached origin report changed or became unsafe during verification: $RESEARCH_STATE"
+  fi
   printf 'verified: %s captain-call inventory\n' "$origin"
 }
 
