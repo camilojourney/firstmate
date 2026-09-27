@@ -141,7 +141,7 @@ EOF
   set -e
   [ "$rc" -ne 0 ] || fail "completed investigation teardown erased a report-only unresolved captain call"
   assert_present "$home/state/$id.meta" "refused completion must preserve investigation metadata"
-  assert_grep "REFUSED" "$home/teardown.err" "refusal must be explicit"
+  assert_grep "cannot be torn down" "$home/teardown.err" "refusal must be explicit"
   pass "report-only unresolved captain call is reproduced and completion refuses before loss"
 }
 
@@ -1357,7 +1357,14 @@ EOF
   mkdir -p "$home/data/$scout_id"
   tasks_in "$home" add "$scout_id" "Ordinary spawned scout review" --kind scout --repo sample --start >/dev/null \
     || fail "could not create the ordinary scout fixture"
-  printf 'brief for %s\n' "$scout_id" > "$home/data/$scout_id/brief.md"
+  cat > "$home/data/$scout_id/brief.md" <<EOF
+# Task
+## Captain's intent
+Run the ordinary scout lifecycle for $scout_id.
+
+## Firstmate spec
+Exercise the ordinary scout completion and teardown path.
+EOF
   fm_git_worktree "$scout_project" "$scout_worktree" "scout-$scout_id"
   prepare_spawn_fakebin "$home"
   FM_SPAWN_NO_GUARD=1 PATH="$home/fakebin:$PATH" FM_ROOT_OVERRIDE="$ROOT" \
