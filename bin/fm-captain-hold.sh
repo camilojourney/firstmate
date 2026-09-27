@@ -1484,7 +1484,7 @@ research_meta_path() {  # <origin-id>
 
 research_meta_access() {  # <snapshot|attest> <origin-id> [decision-keys]
   local mode=$1 origin=$2 keys=${3:-}
-  perl -MFcntl=:DEFAULT,:mode -MFile::Spec -MFile::Temp=tempfile -e '
+  perl -MFcntl=:DEFAULT,:mode -MDigest::SHA -MFile::Spec -MFile::Temp=tempfile -e '
     use strict;
     use warnings;
 
