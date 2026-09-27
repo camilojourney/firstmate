@@ -104,6 +104,7 @@ EOF
 
 run_settle_spawn() {
   local id=$1
+  shift
   FM_ROOT_OVERRIDE='' FM_HOME="$HOME_DIR" \
     FM_STATE_OVERRIDE="$HOME_DIR/state" FM_DATA_OVERRIDE="$HOME_DIR/data" \
     FM_PROJECTS_OVERRIDE="$HOME_DIR/projects" FM_CONFIG_OVERRIDE="$HOME_DIR/config" \
@@ -111,7 +112,7 @@ run_settle_spawn() {
     FM_FAKE_PANE_PATH="$WT_DIR" FM_FAKE_PANE_STALE="$STALE_DIR" \
     FM_FAKE_PANE_STALE_READS="$STALE_READS" FM_FAKE_PANE_COUNTFILE="$COUNTFILE" \
     PATH="$FAKEBIN_DIR:$PATH" \
-    "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off 2>&1
+    "$SPAWN" "$id" "$PROJ_DIR" --mode no-mistakes --yolo off "$@" 2>&1
 }
 
 # A single stale first read (the exact incident) must not be accepted: the
@@ -220,6 +221,26 @@ test_primary_checkout_that_never_settles_fails_at_the_deadline() {
   [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "refused spawn published task metadata"
   pass "a pane stuck on the primary checkout fails loudly at the deadline"
 }
+
+test_fresh_spawn_refuses_reused_task_root() {
+  local rec id out status task_tmp
+  id=settle-fresh-reused-z5
+  rec=$(make_settle_case settle-fresh-reused "$id" 0)
+  read_settle_record "$rec"
+  task_tmp="/tmp/fm-$id"
+  rm -rf "$task_tmp"
+  mkdir "$task_tmp"
+  out=$(run_settle_spawn "$id" --fresh-treehouse 2>&1)
+  status=$?
+  rm -rf "$task_tmp"
+  [ "$status" -ne 0 ] || fail "fresh spawn reused an existing task root"$'\n'"$out"
+  assert_contains "$out" "already exists" \
+    "fresh spawn did not explain the occupied task root refusal"
+  [ ! -e "$HOME_DIR/state/$id.meta" ] || fail "reused fresh root refusal published task metadata"
+  pass "fresh spawn refuses an existing task root"
+}
+
+test_fresh_spawn_refuses_reused_task_root
 
 test_single_stale_first_read_is_not_accepted
 test_already_settled_pane_costs_one_confirm_read

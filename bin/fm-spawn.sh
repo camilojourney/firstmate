@@ -1217,6 +1217,7 @@ GIT_HOOKS_DIR=
 SPAWN_LAUNCH_SENT=0
 SPAWN_ENDPOINT_CLOSED=0
 FRESH_TREEHOUSE_ROOT=${FRESH_TREEHOUSE_ROOT:-}
+FRESH_TREEHOUSE_ALLOCATED_WT=
 
 spawn_fresh_commit_rollback() {
   if fm_backlog_atomic_transition rollback "$STATE/$ID.meta" \
@@ -1345,11 +1346,17 @@ spawn_abort_cleanup() {
   # A fresh leased allocation has no shared-pool successor. If launch aborts
   # before metadata publication, release only the lease held by this task and
   # only from its recorded private root.
-  if [ -n "${FRESH_TREEHOUSE_ROOT:-}" ] && [ -n "${WT:-}" ] &&
+  if [ -n "${FRESH_TREEHOUSE_ROOT:-}" ] &&
     [ ! -e "$STATE/$ID.meta" ] && [ ! -L "$STATE/$ID.meta" ] &&
     [ -d "$FRESH_TREEHOUSE_ROOT" ]; then
-    treehouse --root "$FRESH_TREEHOUSE_ROOT" return --force --if-lease-holder "$ID" "$WT" >/dev/null 2>&1 ||
-      echo "warning: could not release fresh Treehouse allocation for aborted task $ID; preserving it for guarded cleanup" >&2
+    fresh_return_wt=${FRESH_TREEHOUSE_ALLOCATED_WT:-}
+    if [ -z "$fresh_return_wt" ] && [ -f "$TASK_TMP/.fresh-worktree" ]; then
+      IFS= read -r fresh_return_wt <"$TASK_TMP/.fresh-worktree" || true
+    fi
+    if [ -n "$fresh_return_wt" ]; then
+      treehouse --root "$FRESH_TREEHOUSE_ROOT" return --force --if-lease-holder "$ID" "$fresh_return_wt" >/dev/null 2>&1 ||
+        echo "warning: could not release fresh Treehouse allocation for aborted task $ID; preserving it for guarded cleanup" >&2
+    fi
   fi
   # A spawn that aborts after claiming its slot but before its record survives
   # must not leave a claim naming a task no record describes. The release is a
@@ -1675,6 +1682,10 @@ if [ "$RELAUNCH" -eq 0 ]; then
   fi
   if [ "$BACKEND" = cmux ] && [ "$KIND" = secondmate ]; then
     echo "error: backend=cmux does not support --secondmate spawns yet" >&2
+    exit 1
+  fi
+  if [ "$FRESH_TREEHOUSE" -eq 1 ] && [ "$BACKEND" = orca ]; then
+    echo "error: backend=orca does not support --fresh-treehouse" >&2
     exit 1
   fi
   if [ "$BACKEND" = orca ]; then
@@ -2959,6 +2970,9 @@ else
   WT=""
   BRIEF="$DATA/$ID/brief.md"
 fi
+if [ "$FRESH_TREEHOUSE" -eq 0 ]; then
+  FRESH_TREEHOUSE_ROOT=
+fi
 if [ "$RELAUNCH" -eq 0 ] && [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   SPAWN_TREEHOUSE_PROJECT_LOCK=$(fm_treehouse_project_lock_path "$PROJ_ABS") || {
     echo "error: could not resolve the shared Treehouse project lock for $PROJ_ABS" >&2
@@ -4158,32 +4172,21 @@ if [ "$RELAUNCH" -eq 1 ]; then
   [ "$KIND" = secondmate ] || validate_spawn_worktree "relaunch" "$T"
 elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   if [ "$FRESH_TREEHOUSE" -eq 1 ]; then
-    # Fresh allocation is isolated to this task's private Treehouse root.
-    # Verify the source identity in the pane and the destination identity before
-    # accepting it, so no existing pool copy can be reset or borrowed.
+    # Fresh allocation is isolated to a newly created private Treehouse root.
     TASK_TMP="/tmp/fm-$ID"
     if ! (umask 077 && mkdir "$TASK_TMP") 2>/dev/null; then
-      if [ -L "$TASK_TMP" ] || [ ! -d "$TASK_TMP" ] || [ ! -O "$TASK_TMP" ] ||
-        [ -n "$(find "$TASK_TMP" -prune \( -perm -g=w -o -perm -o=w \) -print 2>/dev/null)" ] ||
-        ! chmod 700 "$TASK_TMP"; then
-        echo "error: task temp root $TASK_TMP is not a private directory owned by this user; refusing fresh Treehouse allocation" >&2
-        exit 1
-      fi
+      echo "error: fresh task temp root $TASK_TMP already exists; refusing to reuse an occupied allocation" >&2
+      exit 1
     fi
     FRESH_TREEHOUSE_ROOT=${FRESH_TREEHOUSE_ROOT:-$TASK_TMP/treehouse}
     if [ -e "$FRESH_TREEHOUSE_ROOT" ] || [ -L "$FRESH_TREEHOUSE_ROOT" ]; then
-      if [ -L "$FRESH_TREEHOUSE_ROOT" ] || [ ! -d "$FRESH_TREEHOUSE_ROOT" ] ||
-        [ ! -O "$FRESH_TREEHOUSE_ROOT" ] ||
-        [ -n "$(find "$FRESH_TREEHOUSE_ROOT" -prune \( -perm -g=w -o -perm -o=w \) -print 2>/dev/null)" ]; then
-        echo "error: fresh Treehouse root $FRESH_TREEHOUSE_ROOT is not a private directory owned by this user; refusing allocation" >&2
-        exit 1
-      fi
-    else
-      mkdir -p "$FRESH_TREEHOUSE_ROOT" || {
-        echo "error: could not create the private fresh Treehouse root $FRESH_TREEHOUSE_ROOT" >&2
-        exit 1
-      }
+      echo "error: fresh Treehouse root $FRESH_TREEHOUSE_ROOT already exists; refusing to reuse an occupied allocation" >&2
+      exit 1
     fi
+    mkdir -p "$FRESH_TREEHOUSE_ROOT" || {
+      echo "error: could not create the private fresh Treehouse root $FRESH_TREEHOUSE_ROOT" >&2
+      exit 1
+    }
     FRESH_TREEHOUSE_ROOT=$(CDPATH='' cd -- "$FRESH_TREEHOUSE_ROOT" && pwd -P) || {
       echo "error: could not resolve the private fresh Treehouse root $FRESH_TREEHOUSE_ROOT" >&2
       exit 1
@@ -4191,7 +4194,8 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
     fresh_source=$(shell_quote "$PROJ_ABS_REAL")
     fresh_root=$(shell_quote "$FRESH_TREEHOUSE_ROOT")
     fresh_holder=$(shell_quote "$ID")
-    spawn_send_text_line "$WT_TARGET" "cd -- $fresh_source && test \"\$(git rev-parse --show-toplevel)\" = $fresh_source && fresh_wt=\$(treehouse --root $fresh_root get --lease --lease-holder $fresh_holder) && test -n \"\$fresh_wt\" && test \"\$(cd -- \"\$fresh_wt\" && pwd -P)\" != $fresh_source && cd -- \"\$fresh_wt\"" || {
+    fresh_record=$(shell_quote "$TASK_TMP/.fresh-worktree")
+    spawn_send_text_line "$WT_TARGET" "cd -- $fresh_source && test \"\$(git rev-parse --show-toplevel)\" = $fresh_source && fresh_wt=\$(treehouse --root $fresh_root get --lease --lease-holder $fresh_holder) && test -n \"\$fresh_wt\" && printf '%s\\n' \"\$fresh_wt\" > $fresh_record && test \"\$(cd -- \"\$fresh_wt\" && pwd -P)\" != $fresh_source && cd -- \"\$fresh_wt\"" || {
       echo "error: fresh Treehouse allocation command could not be delivered; refusing to launch" >&2
       exit 1
     }
@@ -4237,10 +4241,19 @@ elif [ "$KIND" != secondmate ] && [ "$BACKEND" != orca ]; then
   for _ in $(seq 1 60); do
     p=$(spawn_current_path "$WT_TARGET" || true)
     [ -z "$p" ] || last_seen="$p"
+    if [ "$FRESH_TREEHOUSE" -eq 1 ] && [ -z "$FRESH_TREEHOUSE_ALLOCATED_WT" ] && [ -f "$TASK_TMP/.fresh-worktree" ]; then
+      IFS= read -r FRESH_TREEHOUSE_ALLOCATED_WT <"$TASK_TMP/.fresh-worktree" || true
+    fi
     if [ -n "$p" ] && spawn_worktree_isolated "$p"; then
       p_real=$(real_path_or_raw "$p")
+      fresh_expected_real=
+      if [ "$FRESH_TREEHOUSE" -eq 1 ]; then
+        fresh_expected_real=$(real_path_or_raw "${FRESH_TREEHOUSE_ALLOCATED_WT:-}")
+      fi
       last_reason="it is an isolated worktree, but no second read agreed with it"
-      if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ]; then
+      if [ -n "$candidate" ] && [ "$p_real" = "$candidate" ] &&
+        { [ "$FRESH_TREEHOUSE" -eq 0 ] ||
+          { [ -n "$fresh_expected_real" ] && [ "$p_real" = "$fresh_expected_real" ]; }; }; then
         if [ "$FRESH_TREEHOUSE" -eq 1 ]; then
           WT="$p_real"
         else
