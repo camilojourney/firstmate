@@ -64,6 +64,20 @@ test_passes_the_command_status_and_output_through() {
   pass "fm_exec_timed passes a command's status and output through unchanged"
 }
 
+# Stock macOS Bash 3.2 has no BASHPID. The launcher must still start its
+# watchdog under nounset and preserve the command's status.
+test_exec_without_bashpid() {
+  local rc=0
+  (
+    unset BASHPID
+    set -u
+    . "$ROOT/bin/fm-timeout-lib.sh"
+    PATH=$PERL_ONLY fm_exec_timed 5 1 bash -c 'exit 7'
+  ) || rc=$?
+  [ "$rc" -eq 7 ] || fail "fm_exec_timed failed without BASHPID (rc=$rc)"
+  pass "fm_exec_timed works with BASHPID absent under nounset"
+}
+
 # A command that honors TERM ends at the bound, long before the grace would
 # have forced it, and is gone afterwards.
 test_term_ends_a_cooperative_command_at_the_bound() {
@@ -109,7 +123,7 @@ test_the_bound_replaces_the_calling_shell() {
     rm -f "$dir/caller" "$dir/parent"
     (
       . "$ROOT/bin/fm-timeout-lib.sh"
-      printf '%s\n' "$BASHPID" > "$dir/caller"
+      perl -e 'print getppid(), "\n"' > "$dir/caller"
       PATH=$path fm_exec_timed 5 1 bash -c 'echo "$PPID" > "$1"' _ "$dir/parent"
     ) || fail "the bounded probe failed under PATH=$path"
     caller=$(cat "$dir/caller")
@@ -211,7 +225,7 @@ test_an_owner_that_dies_during_startup_ends_the_command() {
   PATH=$PERL_ONLY bash -c '
     . "$1/bin/fm-timeout-lib.sh"
     (
-      echo "$BASHPID" > "$2/watchdog"
+      perl -e "print getppid(), chr(10)" > "$2/watchdog"
       while kill -0 "$$" 2>/dev/null; do sleep 0.05; done
       fm_exec_timed 60 1 bash -c "exec sleep 300"
     ) >/dev/null 2>&1 &
@@ -328,6 +342,7 @@ test_run_timed_passes_a_natural_exit_through_a_fired_bound() {
 }
 
 test_passes_the_command_status_and_output_through
+test_exec_without_bashpid
 test_run_timed_reports_the_bound_when_the_wrapper_records_a_signal_death
 test_run_timed_passes_a_natural_exit_through_a_fired_bound
 test_term_ends_a_cooperative_command_at_the_bound
