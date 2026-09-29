@@ -187,6 +187,7 @@ test_a_signal_to_the_bounding_process_reaches_the_command() {
 }
 
 # A caller that names its owner before launching the watchdog is watched even
+# with BASHPID absent under nounset, as on stock macOS Bash 3.2.
 # when that owner died while the watchdog was still starting: the watchdog's
 # parent is then not the named owner, so the escalation starts at once rather
 # than at the bound.
@@ -199,6 +200,9 @@ test_a_named_owner_that_is_gone_ends_the_command() {
   wait "$gone" 2>/dev/null || true
   started=$SECONDS
   (
+    unset BASHPID
+    set -u
+    [ -z "${BASHPID+x}" ] || fail "owner-death probe did not remove BASHPID"
     . "$ROOT/bin/fm-timeout-lib.sh"
     PATH=$PERL_ONLY FM_EXEC_TIMED_OWNER_PID=$gone \
       fm_exec_timed 60 1 bash -c 'echo $$ > "$1"; exec sleep 300' _ "$dir/pid"
@@ -223,6 +227,8 @@ test_an_owner_that_dies_during_startup_ends_the_command() {
   mkdir -p "$dir"
   # shellcheck disable=SC2016
   PATH=$PERL_ONLY bash -c '
+    unset BASHPID
+    set -u
     . "$1/bin/fm-timeout-lib.sh"
     (
       perl -e "print getppid(), chr(10)" > "$2/watchdog"
