@@ -421,6 +421,11 @@ printf '%s\n' '{"rules":[{"when":"Agy work.","use":{"harness":"agy","model":"gpt
 reset_log
 TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$AGY_GROUPS" run code out err "$BRIEF"
 assert_contains "$out" 'candidate: agy:gpt-oss-120b-medium  provider=agy  scope=claude_gpt  remaining=40%' "a GPT model binds to the agy claude_gpt scope, not the gemini scope"
+# pi-signed shares Pi's Antigravity model ids, so it binds to the same family.
+printf '%s\n' '{"rules":[{"when":"Agy work.","use":{"harness":"pi-signed","model":"antigravity/gemini-3.8-flash","provider":"agy"}}]}' > "$RULES"
+reset_log
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$AGY_GROUPS" run code out err "$BRIEF"
+assert_contains "$out" 'candidate: pi-signed:antigravity/gemini-3.8-flash  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible' "pi-signed binds to the agy gemini scope"
 # Another provider's qualified model must not inherit agy family evidence.
 for model in anthropic/claude-sonnet-5 google/gemini-3.8-flash openai/gpt-oss-120b-medium \
   gemini-3.8-flash antigravity/other/claude-sonnet-5; do

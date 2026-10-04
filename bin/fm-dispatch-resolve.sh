@@ -376,7 +376,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
       ($m != "" and (.scope == ("model:" + $bare) or .scope == ("product:" + $bare))) or
       ($p == "agy" and $m != "" and
         (($harness == "agy" and $m == $bare) or
-         ($harness == "pi" and $m == ("antigravity/" + $bare))) and
+         (($harness == "pi" or $harness == "pi-signed") and $m == ("antigravity/" + $bare))) and
         .scope == agy_group($bare))
     )];
   def floor_state($f; $p; $lane):
