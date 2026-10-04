@@ -1,0 +1,4 @@
+Credential availability: TYPESAFE_API_KEY 
+Command: isolated FM_HOME bin/fm-dispatch-resolve.sh brief.md
+dispatch-resolve: off (TYPESAFE_API_KEY absent from the environment and /Users/camiloslaptop/.no-mistakes/worktrees/af1f7764a4ae/01M43WEBPE7CJ6938S5RMRVP44/.test-tmp/live-home/.env)
+exit=0

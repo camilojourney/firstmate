@@ -1,0 +1,16 @@
+ok - absent key is off: one stderr line, exit 0, no network call
+ok - TYPESAFE_API_KEY= in .env activates the tool; environment and config overrides work
+ok - clear: one rule Choice request, key on the fd header only, spendPriority argmax over every candidate
+ok - never-send list withholds the request on a match or a bad list, and never prints the value
+ok - rules snapshots and shell quoting preserve the profile protocol
+not ok - a Gemini model binds to the agy gemini scope (missing: 'candidate: pi:antigravity/gemini-3.8-flash  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible')
+--- output ---
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/60
+  rule: rule_1 (Agy work.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: pi:antigravity/gemini-3.8-flash  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty

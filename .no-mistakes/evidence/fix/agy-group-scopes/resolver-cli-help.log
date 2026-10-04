@@ -1,0 +1,69 @@
+fm-dispatch-resolve.sh - resolve one concrete crewmate or scout dispatch
+profile from a task brief with typesafe.ai's System One model (Jev), opt-in.
+
+Usage:
+  fm-dispatch-resolve.sh <brief-file> [--project <name>]
+
+Opt-in gate: TYPESAFE_API_KEY non-empty in this process environment, else a
+  TYPESAFE_API_KEY= line in $FM_HOME/.env read with fmx_env_get, the same
+  accessor as FMX_PAIRING_TOKEN (bin/fm-env-lib.sh). The environment wins.
+  Absent in both: one "dispatch-resolve: off" line on stderr, nothing on
+  stdout, exit 0, no network call, so firstmate dispatches exactly as today.
+  The key lives in one shell variable and reaches curl as a header read from
+  a file descriptor, never on argv; nothing logs or writes it.
+
+What it does when on with at least one rule: one POST to
+  https://api.typesafe.ai/v1/systemone with the project name and the brief's
+  `## Captain's intent` and `## Firstmate spec` sections, tagged when it is a
+  scout brief (the whole brief when it has neither section), as state and
+  ONE Choice question whose options are every rule's `when` from
+  config/crew-dispatch.json plus one fixed generic none option. Jev returns
+  the matched rule, a probability per option, and a confidence. Everything
+  after that is jq: the confidence floor (0.6 on the answer confidence, or a
+  rule's declared `min_confidence` on that rule's probability, falling to the
+  most probable other option that clears its own floor), the rule's declared
+  `approval` and `floor`, each profile's declared `provider` and `floor`, the
+  quota rows from ONE quota-axi --json snapshot (schema 5 or 6; each
+  candidate binds to one row through quota_row in
+  bin/fm-quota-axi-lib.sh, so a Pi lane such as openai-codex-work/...
+  reads its own account's row and an expanded provider with no row for the
+  candidate is unmeasured, never blocked), and the spendPriority argmax over
+  the eligible candidates. The model never sees quota, catalogs, approvals,
+  confidence floors, `why`, or `use`. With no rules, it returns a non-clear
+  result so firstmate keeps using the existing intake.
+  docs/configuration.md "Crew dispatch profiles" owns the declared fields and
+  "Typed dispatch resolution" owns this tool's operator contract.
+
+Never-send check: when the optional $FM_HOME/config/dispatch-never-send list
+  exists, every string value of the built request is checked against it
+  before the POST. Each non-blank, non-# line is a literal matched
+  case-insensitively, with surrounding whitespace trimmed and every run of
+  whitespace, on both sides, treated as one space. A match, or a list that
+  is not a readable regular file, prints one
+  "dispatch-resolve: off (...; nothing sent)" line on stderr naming at most
+  the list line number, never its value, prints nothing on stdout, and exits
+  0 with no network or quota call, exactly like the absent-key off path.
+
+Output (stdout, TOON-style block):
+  dispatch-resolve:
+    status: clear | ambiguous | escalate | error
+    model/latency_ms/tokens, rule (when excerpt) and confidence, probabilities
+    fallback: <runner-up rule taken when the picked rule missed its own floor>
+    reason: <why the status is not clear>
+    candidate: <harness>:<model> provider=.. scope=.. remaining=..% spendPriority=.. runway=.. -> eligible | eligible, unranked: <reason> | not eligible: <reason>
+    profile: --harness <h> [--model <m>] [--effort <e>]     (status clear only)
+  clear     -> pass the profile line to fm-spawn.sh unless you state a reason to override
+  ambiguous -> confidence below the floor; decide as today from the probabilities
+  escalate  -> the rule requires captain approval, no candidate is rankable, or a genuine tie
+  error     -> API, network, response, or quota-axi failure; decide as today
+  Every outcome exits 0 so an intake is never blocked by this tool.
+  Exit 2 only for a usage or configuration error (unreadable brief, an
+  existing unreadable rules file, malformed rules, or missing jq), which is
+  actionable, never selected around.
+
+Environment:
+  TYPESAFE_API_KEY is the only resolver-specific environment setting.
+
+Authority: this tool never replaces firstmate's judgment, quota-array-dispatch,
+  the captain-approval gate, or fm-spawn.sh validation; it publishes one
+  inspectable answer plus every candidate's evidence, in code.

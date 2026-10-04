@@ -1,0 +1,257 @@
+
+=== schema 5 agy gemini-3.8-flash-high ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 33   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: agy:gemini-3.8-flash-high  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'agy' --model 'gemini-3.8-flash-high'
+
+=== schema 5 agy claude-opus-4-6-thinking ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 17   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+
+=== schema 5 agy gpt-oss-120b-medium ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 15   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: agy:gpt-oss-120b-medium  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+
+=== schema 5 pi antigravity/gemini-3.8-flash-high ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: pi:antigravity/gemini-3.8-flash-high  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'pi' --model 'antigravity/gemini-3.8-flash-high'
+
+=== schema 5 pi antigravity/claude-opus-4-6-thinking ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 17   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: pi:antigravity/claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+
+=== schema 5 pi antigravity/gpt-oss-120b-medium ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 15   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: pi:antigravity/gpt-oss-120b-medium  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+
+=== schema 6 agy gemini-3.8-flash-high ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: agy:gemini-3.8-flash-high  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'agy' --model 'gemini-3.8-flash-high'
+
+=== schema 6 agy claude-opus-4-6-thinking ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 15   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+
+=== schema 6 agy gpt-oss-120b-medium ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 16   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: agy:gpt-oss-120b-medium  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+
+=== schema 6 pi antigravity/gemini-3.8-flash-high ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 17   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: pi:antigravity/gemini-3.8-flash-high  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'pi' --model 'antigravity/gemini-3.8-flash-high'
+
+=== schema 6 pi antigravity/claude-opus-4-6-thinking ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: pi:antigravity/claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+
+=== schema 6 pi antigravity/gpt-oss-120b-medium ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 15   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: pi:antigravity/gpt-oss-120b-medium  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+
+=== image-generation Pi Flash rule wins ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 17   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: pi:antigravity/gemini-3.8-flash  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'pi' --model 'antigravity/gemini-3.8-flash'
+
+=== base commit reproduces missing applicable row ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 17   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  note: 1 eligible candidate(s) unranked (agy)
+  candidate: pi:antigravity/gemini-3.8-flash  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'cursor' --model 'cursor-grok-4.6-medium'
+
+=== exhausted Claude/GPT does not block Gemini ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: pi:antigravity/gemini-3.8-flash  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible
+  candidate: cursor:cursor-grok-4.6-medium  provider=cursor  scope=all_models  remaining=91%  spendPriority=0.7597  runway=through_reset  -> eligible
+  profile: --harness 'pi' --model 'antigravity/gemini-3.8-flash'
+
+=== exhausted own family vetoes GPT ===
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 17   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:gpt-oss-120b-medium  provider=agy  scope=claude_gpt  remaining=0%  spendPriority=-  runway=exhausted_now  -> not eligible: runway exhausted_now at claude_gpt
+
+=== no inferred family: [{"harness":"agy"}] ===
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 16   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:-  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+
+=== no inferred family: [{"harness":"agy","model":"unknown-family"}] ===
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: agy:unknown-family  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+
+=== no inferred family: [{"harness":"pi","model":"antigravity/unknown-family","provider":"agy"}] ===
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 19   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: pi:antigravity/unknown-family  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
+
+=== native agy without explicit provider infers provider and ranks ===
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: agy:gemini-3.8-flash-high  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible
+  profile: --harness 'agy' --model 'gemini-3.8-flash-high'
+
+=== non-agy provider must not acquire Gemini scope alias ===
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 16   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: pi:google/gemini-3.8-flash  provider=google  -> eligible, unranked: no applicable quota row for provider google: disclosed uncertainty
+
+=== non-numeric family spendPriority null remains unranked ===
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 15   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: pi:antigravity/gemini-3.8-flash  provider=agy  scope=gemini  remaining=99%  spendPriority=-  runway=through_reset  -> eligible, unranked: spendPriority missing or non-numeric at gemini: not rankable: disclosed uncertainty
+
+=== non-numeric family spendPriority "high" remains unranked ===
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 19   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: pi:antigravity/gemini-3.8-flash  provider=agy  scope=gemini  remaining=99%  spendPriority=-  runway=through_reset  -> eligible, unranked: spendPriority missing or non-numeric at gemini: not rankable: disclosed uncertainty
+
+=== exact model exhaustion remains a bound beside healthy family ===
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 17   tokens: 100/60
+  rule: rule_1 (Routine implementation or image generation.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: pi:antigravity/gemini-3.8-flash  provider=agy  scope=model:gemini-3.8-flash  remaining=0%  spendPriority=-  runway=exhausted_now  bounds=gemini:99%/through_reset,model:gemini-3.8-flash:0%/exhausted_now  -> not eligible: runway exhausted_now at model:gemini-3.8-flash
+ok - all focused CLI assertions passed (canned external dependencies, not live Jev)
