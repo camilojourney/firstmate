@@ -369,12 +369,15 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
     if ($bare | startswith("gemini-")) then "gemini"
     elif ($bare | test("^(claude|gpt)-")) then "claude_gpt"
     else null end;
-  def applicable($p; $lane; $m):
+  def applicable($p; $lane; $m; $harness):
     (bare($m)) as $bare |
     [rows($p; $lane)[] | select(
       .scope == "all_models" or .scope == "all_products" or
       ($m != "" and (.scope == ("model:" + $bare) or .scope == ("product:" + $bare))) or
-      ($p == "agy" and $m != "" and .scope == agy_group($bare))
+      ($p == "agy" and $m != "" and
+        (($harness == "agy" and $m == $bare) or
+         ($harness == "pi" and $m == ("antigravity/" + $bare))) and
+        .scope == agy_group($bare))
     )];
   def floor_state($f; $p; $lane):
     if $f == null then "none"
@@ -396,7 +399,7 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
                 then "provider \($p) has no quota row for account \(if $lane == "" then "default" else $lane end)"
                 else "provider \($p) not in the quota snapshot" end)}
     else
-      (applicable($p; $lane; ($c.model // ""))) as $rows |
+      (applicable($p; $lane; ($c.model // ""); $c.harness)) as $rows |
       (evidence($rows)) as $bounds |
       (floor_state($c.floor; $p; $lane)) as $profile_floor_state |
       if any($rows[]; (.runway.status // "") == "exhausted_now") then

@@ -421,7 +421,76 @@ printf '%s\n' '{"rules":[{"when":"Agy work.","use":{"harness":"agy","model":"gpt
 reset_log
 TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$AGY_GROUPS" run code out err "$BRIEF"
 assert_contains "$out" 'candidate: agy:gpt-oss-120b-medium  provider=agy  scope=claude_gpt  remaining=40%' "a GPT model binds to the agy claude_gpt scope, not the gemini scope"
-pass "agy model-family scopes bind each model to its own group"
+# Another provider's qualified model must not inherit agy family evidence.
+for model in anthropic/claude-sonnet-5 google/gemini-3.8-flash openai/gpt-oss-120b-medium \
+  gemini-3.8-flash antigravity/other/claude-sonnet-5; do
+  jq -n --arg model "$model" '{rules:[{when:"Agy work.",use:{harness:"pi",model:$model,provider:"agy"}}]}' > "$RULES"
+  reset_log
+  TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$AGY_GROUPS" run code out err "$BRIEF"
+  expect_code 0 "$code" "foreign model resolution exits cleanly: $model"
+  assert_contains "$out" 'eligible, unranked: no applicable quota row for provider agy' "foreign model cannot inherit agy family quota: $model"
+  assert_not_contains "$out" '  profile:' "foreign model is not selected: $model"
+done
+
+# Each family's exhaustion leaves the other available; exact-model exhaustion
+# vetoes only that model even when its family is healthy. Test both veto signals.
+AGY_BOUNDARY="$TMP_ROOT/agy-boundary.json"
+for harness in agy pi; do
+  prefix=''
+  provider_args='{}'
+  if [ "$harness" = pi ]; then
+    prefix='antigravity/'
+    provider_args='{"provider":"agy"}'
+  fi
+  for family in gemini claude_gpt; do
+    if [ "$family" = gemini ]; then
+      blocked=gemini-3.8-flash
+      sibling=gemini-3.8-flash-high
+      other='claude-opus-4-6-thinking'
+    else
+      blocked='claude-opus-4-6-thinking'
+      sibling=gpt-oss-120b-medium
+      other=gemini-3.8-flash
+    fi
+    for signal in percent runway; do
+      if [ "$signal" = percent ]; then
+        exhaustion='{"effectivePercentRemaining":0}'
+      else
+        exhaustion='{"runway":{"status":"exhausted_now"}}'
+      fi
+      for scope in "$family" "model:$blocked"; do
+        jq --arg scope "$scope" --argjson exhaustion "$exhaustion" '
+          (.providers[] | select(.provider == "agy") | .quotaSemantics.effectiveAvailability) |=
+            (if ($scope | startswith("model:")) then
+               . + [{scope:$scope,status:"known",effectivePercentRemaining:99,
+                     runway:{status:"through_reset"},selection:{spendPriority:0.9}} + $exhaustion]
+             else map(if .scope == $scope then . + $exhaustion else . end) end)' "$AGY_GROUPS" > "$AGY_BOUNDARY"
+        jq -n --arg harness "$harness" --arg prefix "$prefix" --arg blocked "$blocked" \
+          --arg sibling "$sibling" --arg other "$other" --argjson provider "$provider_args" '
+          {rules:[{when:"Agy work.",use:([$blocked,$sibling,$other] | map({harness:$harness,model:($prefix + .)} + $provider))}]}' > "$RULES"
+        reset_log
+        TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$AGY_BOUNDARY" run code out err "$BRIEF"
+        expect_code 0 "$code" "agy exhaustion resolution exits cleanly: $harness/$scope/$signal"
+        assert_contains "$out" '  status: clear' "healthy family remains rankable: $harness/$scope/$signal"
+        if [ "$signal" = percent ]; then
+          reason="0% remaining at $scope"
+        else
+          reason="runway exhausted_now at $scope"
+        fi
+        assert_contains "$out" "-> not eligible: $reason" "exhausted quota vetoes its candidate: $harness/$scope/$signal"
+        if [ "$scope" = "$family" ]; then
+          winner=$other
+          assert_equals '2' "$(grep -c -- "-> not eligible: $reason" <<<"$out")" "family exhaustion vetoes both family members"
+        else
+          if [ "$family" = gemini ]; then winner=$sibling; else winner=$other; fi
+          assert_equals '1' "$(grep -c -- "-> not eligible: $reason" <<<"$out")" "exact-model exhaustion leaves its sibling eligible"
+        fi
+        assert_contains "$out" "  profile: --harness '$harness' --model '$prefix$winner'" "healthy candidate wins: $harness/$scope/$signal"
+      done
+    done
+  done
+done
+pass "agy family matching excludes foreign models and preserves exhaustion boundaries"
 
 GEMINI_RULE="$TMP_ROOT/gemini-rule.json"
 printf '%s\n' '{"rules":[{"when":"Gemini work.","use":{"harness":"gemini","model":"gemini-3.8-flash-high","provider":"google"}}]}' > "$GEMINI_RULE"
