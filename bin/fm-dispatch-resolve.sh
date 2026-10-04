@@ -362,11 +362,19 @@ RESULT=$(jq -n --arg floor "$CONFIDENCE_FLOOR" --argjson lat "$LAT_MS" --arg non
   def lane_of($c): quota_lane($c.harness; $c.model);
   def measured($p; $lane):
     (prov($p; $lane) != null and (["known", "partial"] | index(prov($p; $lane).quotaSemantics.status)) != null);
+  # Antigravity reports model-family scopes instead of an account-wide row:
+  # quota-axi groups Gemini models under "gemini" and Claude/GPT models under
+  # "claude_gpt", so a model applies to the scope of its own family only.
+  def agy_group($bare):
+    if ($bare | startswith("gemini-")) then "gemini"
+    elif ($bare | test("^(claude|gpt)-")) then "claude_gpt"
+    else null end;
   def applicable($p; $lane; $m):
     (bare($m)) as $bare |
     [rows($p; $lane)[] | select(
       .scope == "all_models" or .scope == "all_products" or
-      ($m != "" and (.scope == ("model:" + $bare) or .scope == ("product:" + $bare)))
+      ($m != "" and (.scope == ("model:" + $bare) or .scope == ("product:" + $bare))) or
+      ($p == "agy" and $m != "" and .scope == agy_group($bare))
     )];
   def floor_state($f; $p; $lane):
     if $f == null then "none"

@@ -404,6 +404,25 @@ TYPESAFE_API_KEY=$KEY run code out err "$BRIEF"
 assert_contains "$out" 'candidate: agy:-  provider=agy  scope=all_models  remaining=64%  spendPriority=0.4  runway=through_reset  -> eligible' "agy uses its resolver-only authoritative quota provider"
 assert_contains "$out" "  profile: --harness 'agy'" "provider-less agy rule resolves"
 
+# Live quota-axi reports Antigravity as model-family scopes, never all_models.
+AGY_GROUPS="$TMP_ROOT/agy-groups.json"
+jq '(.providers[] | select(.provider == "agy") | .quotaSemantics.effectiveAvailability) = [
+  { "scope": "gemini", "status": "known", "effectivePercentRemaining": 99, "runway": { "status": "through_reset" }, "selection": { "spendPriority": 0.9 } },
+  { "scope": "claude_gpt", "status": "known", "effectivePercentRemaining": 40, "runway": { "status": "projected_exhaustion" }, "selection": { "spendPriority": -0.2 } } ]' "$QUOTA" > "$AGY_GROUPS"
+printf '%s\n' '{"rules":[{"when":"Agy work.","use":[
+  {"harness":"pi","model":"antigravity/gemini-3.8-flash","provider":"agy"},
+  {"harness":"agy","model":"claude-opus-4-6-thinking"}]}]}' > "$RULES"
+reset_log
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$AGY_GROUPS" run code out err "$BRIEF"
+assert_contains "$out" 'candidate: pi:antigravity/gemini-3.8-flash  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible' "a Gemini model binds to the agy gemini scope"
+assert_contains "$out" 'candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible' "a Claude model binds to the agy claude_gpt scope"
+assert_contains "$out" "  profile: --harness 'pi' --model 'antigravity/gemini-3.8-flash'" "agy family scopes are rankable"
+printf '%s\n' '{"rules":[{"when":"Agy work.","use":{"harness":"agy","model":"gpt-oss-120b-medium"}}]}' > "$RULES"
+reset_log
+TYPESAFE_API_KEY=$KEY QUOTA_AXI_FIXTURE="$AGY_GROUPS" run code out err "$BRIEF"
+assert_contains "$out" 'candidate: agy:gpt-oss-120b-medium  provider=agy  scope=claude_gpt  remaining=40%' "a GPT model binds to the agy claude_gpt scope, not the gemini scope"
+pass "agy model-family scopes bind each model to its own group"
+
 GEMINI_RULE="$TMP_ROOT/gemini-rule.json"
 printf '%s\n' '{"rules":[{"when":"Gemini work.","use":{"harness":"gemini","model":"gemini-3.8-flash-high","provider":"google"}}]}' > "$GEMINI_RULE"
 cp "$GEMINI_RULE" "$RULES"
