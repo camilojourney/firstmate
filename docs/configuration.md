@@ -1167,7 +1167,7 @@ After the answer, code applies all remaining checks and ranking:
 - The numeric `spendPriority` argmax over candidates, using each candidate's limiting row.
 
 For provider `agy` only, the resolver additionally binds bare model IDs starting with `gemini-` to scope `gemini`, and those starting with `claude-` or `gpt-` to scope `claude_gpt`.
-This applies to native `agy` model IDs and Pi's `antigravity/<id>` profiles declaring `provider: "agy"`, with each family bounding only its own models.
+This applies only to native `agy` bare model IDs and `pi` or `pi-signed` profiles using `antigravity/<id>` with `provider: "agy"`, with each family bounding only its own models.
 An omitted model or an unknown family adds no family row; existing account-wide and exact-model/product matching remains unchanged.
 Binding a family row does not supply a missing numeric `spendPriority`, so unmeasured rows remain unranked.
 
