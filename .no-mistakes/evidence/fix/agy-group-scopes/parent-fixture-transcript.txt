@@ -1,0 +1,31 @@
+
+Fixture-backed resolver output (NOT live; tool=/Users/camiloslaptop/.no-mistakes/worktrees/af1f7764a4ae/01M43XS6K679KQNQ9GAD2596QZ/bin/.phase-parent-resolver.sh):
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 20   tokens: 100/60
+  rule: rule_1 (Agy work.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: pi:antigravity/gemini-3.8-flash  provider=agy  scope=gemini  remaining=99%  spendPriority=0.9  runway=through_reset  -> eligible
+  candidate: agy:claude-opus-4-6-thinking  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  profile: --harness 'pi' --model 'antigravity/gemini-3.8-flash'
+
+Fixture-backed resolver output (NOT live; tool=/Users/camiloslaptop/.no-mistakes/worktrees/af1f7764a4ae/01M43XS6K679KQNQ9GAD2596QZ/bin/.phase-parent-resolver.sh):
+dispatch-resolve:
+  status: clear
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/60
+  rule: rule_1 (Agy work.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  note: rule matched
+  candidate: agy:gpt-oss-120b-medium  provider=agy  scope=claude_gpt  remaining=40%  spendPriority=-0.2  runway=projected_exhaustion  -> eligible
+  profile: --harness 'agy' --model 'gpt-oss-120b-medium'
+
+Fixture-backed resolver output (NOT live; tool=/Users/camiloslaptop/.no-mistakes/worktrees/af1f7764a4ae/01M43XS6K679KQNQ9GAD2596QZ/bin/.phase-parent-resolver.sh):
+dispatch-resolve:
+  status: escalate
+  model: jev-1.13.0   latency_ms: 18   tokens: 100/60
+  rule: rule_1 (Agy work.)   confidence: 0.99
+  probabilities: rule_1=0.99 default=0.01
+  reason: no rankable eligible candidate
+  note: rule matched
+  candidate: pi-signed:antigravity/gemini-3.8-flash  provider=agy  -> eligible, unranked: no applicable quota row for provider agy: disclosed uncertainty
