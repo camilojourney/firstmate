@@ -1163,8 +1163,13 @@ After the answer, code applies all remaining checks and ranking:
 
 - The confidence floor and the matched rule's `approval` and `floor`.
 - Each candidate's `provider` and `floor`.
-- Every applicable account-wide and model/product row from one `quota-axi --json` snapshot, plus Antigravity's model-family rows (`gemini` for Gemini models, `claude_gpt` for Claude and GPT models).
+- Every applicable account-wide, model/product, and supported model-family row from one `quota-axi --json` snapshot.
 - The numeric `spendPriority` argmax over candidates, using each candidate's limiting row.
+
+For provider `agy` only, the resolver additionally binds bare model IDs starting with `gemini-` to scope `gemini`, and those starting with `claude-` or `gpt-` to scope `claude_gpt`.
+This applies to native `agy` model IDs and Pi's `antigravity/<id>` profiles declaring `provider: "agy"`, with each family bounding only its own models.
+An omitted model or an unknown family adds no family row; existing account-wide and exact-model/product matching remains unchanged.
+Binding a family row does not supply a missing numeric `spendPriority`, so unmeasured rows remain unranked.
 
 The [shared quota library](../bin/fm-quota-axi-lib.sh) accepts schema 5 and schema 6 and implements the [account-matching contract](../.agents/skills/quota-array-dispatch/SKILL.md#1-eligibility).
 
