@@ -621,6 +621,10 @@
       "audience": "maintainer-verification"
     },
     {
+      "path": "tests/fixtures/pi-orphan-table/pasted-separator.txt",
+      "audience": "maintainer-verification"
+    },
+    {
       "path": "tests/fixtures/pi-orphan-table/typed.txt",
       "audience": "maintainer-verification"
     },

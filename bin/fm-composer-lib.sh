@@ -913,7 +913,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap] 
   FM_COMPOSER_SCAN_PI_GLYPH=
   FM_COMPOSER_SCAN_LEFTBAR_GLYPH_ROW=-1
   FM_COMPOSER_SCAN_LEFTBAR_GLYPH=
-  local leftbar_start=-1 pi_open=-1 pi_lines=0 pi_max
+  local leftbar_start=-1 pi_open=-1 pi_first_separator=-1 pi_lines=0 pi_max
   local probe row_glyph row_glyph_row
   local box_glyph_row=-1 box_glyph='' pi_glyph_row=-1 pi_glyph=''
   pi_max=$FM_COMPOSER_PI_MAX_LINES
@@ -960,6 +960,7 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap] 
     # closes the preceding candidate and immediately opens the next, so an
     # earlier transcript rule can never outrank the live bottom composer pair.
     if _fm_composer_pi_separator_row "$trimmed"; then
+      [ "$pi_first_separator" -ge 0 ] || pi_first_separator=$row
       FM_COMPOSER_SCAN_PI_LAST_SEPARATOR=$row
       if [ "$pi_open" -ge 0 ]; then
         FM_COMPOSER_SCAN_PI_PAIR_FOUND=1
@@ -1176,6 +1177,13 @@ _fm_composer_scan_screen() {  # <plain-screen> <cursor-or-empty> [extract-wrap] 
   done <<EOF
 $pane
 EOF
+  # A separator before an unresolved border may be the live composer's top.
+  # Later separators may be pasted input, not a new composer below scrollback.
+  # Reject that ambiguous pair for classification AND content extraction.
+  if [ "$pi_first_separator" -ge 0 ] \
+     && [ "$FM_COMPOSER_SCAN_INCOMPLETE_BOX_LAST" -ge "$pi_first_separator" ]; then
+    FM_COMPOSER_SCAN_PI_PAIR_FOUND=0
+  fi
   if [ -n "$cy" ] && [ "$top" -ge 0 ] && [ "$top" -lt "$cy" ]; then
     FM_COMPOSER_SCAN_UNSAFE=1
   fi
@@ -1885,12 +1893,10 @@ _fm_composer_select_cursorless() {
     FM_COMPOSER_SELECTED_FIRST=$FM_COMPOSER_SCAN_LEFTBAR_START
     FM_COMPOSER_SELECTED_LAST=$FM_COMPOSER_SCAN_LEFTBAR_END
   fi
-  # An incomplete box wholly above a live Pi separator pair is scrollback (a
-  # transcript table whose top border scrolled off leaves an orphan bottom
-  # rule); it must not outrank the composer pair drawn below it.
+  # An incomplete scrollback box must not outrank the Pi pair the scanner
+  # proved safe below it (a table whose top scrolled off leaves an orphan rule).
   if [ "$FM_COMPOSER_SCAN_INCOMPLETE_BOX_FROM" -gt "$generic" ] \
-     && ! { [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" = 1 ] \
-            && [ "$FM_COMPOSER_SCAN_INCOMPLETE_BOX_LAST" -lt "$FM_COMPOSER_SCAN_PI_OPEN" ]; }; then
+     && [ "$FM_COMPOSER_SCAN_PI_PAIR_FOUND" != 1 ]; then
     FM_COMPOSER_SELECTED_KIND=
     return 1
   fi
